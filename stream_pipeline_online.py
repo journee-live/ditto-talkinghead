@@ -7,18 +7,21 @@ import cv2
 import numpy as np
 from loguru import logger
 
-from core.atomic_components.audio2motion import Audio2Motion
-from core.atomic_components.avatar_registrar import AvatarRegistrar, smooth_x_s_info_lst
-from core.atomic_components.cfg import parse_cfg, print_cfg
-from core.atomic_components.condition_handler import ConditionHandler, _mirror_index
-from core.atomic_components.decode_f3d import DecodeF3D
-from core.atomic_components.motion_stitch import MotionStitch
-from core.atomic_components.putback import PutBack
-from core.atomic_components.warp_f3d import WarpF3D
-from core.atomic_components.wav2feat import Wav2Feat
-from core.utils.profile_util import profile_block
-from core.utils.profiling_utils import FPSTracker
-from core.utils.threading_utils import AtomicCounter
+from .core.atomic_components.audio2motion import Audio2Motion
+from .core.atomic_components.avatar_registrar import (
+    AvatarRegistrar,
+    smooth_x_s_info_lst,
+)
+from .core.atomic_components.cfg import parse_cfg, print_cfg
+from .core.atomic_components.condition_handler import ConditionHandler, _mirror_index
+from .core.atomic_components.decode_f3d import DecodeF3D
+from .core.atomic_components.motion_stitch import MotionStitch
+from .core.atomic_components.putback import PutBack
+from .core.atomic_components.warp_f3d import WarpF3D
+from .core.atomic_components.wav2feat import Wav2Feat
+from .core.utils.profile_util import profile_block
+from .core.utils.profiling_utils import FPSTracker
+from .core.utils.threading_utils import AtomicCounter
 
 """
 avatar_registrar_cfg:

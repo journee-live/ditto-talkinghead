@@ -33,7 +33,6 @@ def ctrl_motion(x_d_info, **kwargs):
             x_d_info[k] = bin66_to_degree(x_d_info[k]) + kwargs[kk]
 
     # pose * alpha
-    for kk in ["alpha_pitch", "alpha_yaw", "alpha_roll"]:
     for kk in ["alpha_pitch", "alpha_yaw", "alpha_roll", "alpha_exp"]:
         if kk in kwargs:
             k = kk[6:]
