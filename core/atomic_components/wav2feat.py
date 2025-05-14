@@ -3,6 +3,7 @@ import numpy as np
 import math
 
 from ..aux_models.hubert_stream import HubertStreaming
+from ..utils.profile_util import profile
 
 """
 wavlm_cfg = {
@@ -67,6 +68,7 @@ class Wav2FeatHubert:
     ):
         self.hubert = HubertStreaming(**hubert_cfg)
 
+    #@profile("Wav2Feat.__call__")
     def __call__(self, audio_chunk, chunksize=(3, 5, 2)):
         """
         audio_chunk: int(sum(chunksize) * 0.04 * 16000) + 80    # 6480

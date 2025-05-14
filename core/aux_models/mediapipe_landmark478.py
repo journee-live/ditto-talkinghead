@@ -48,7 +48,7 @@ def bbox_to_roi(
         return np.array([cx, cy, width, height, 0])
     x0, y0 = rotation_keypoints[0]
     x1, y1 = rotation_keypoints[1]
-    angle = -np.atan2(y0 - y1, x1 - x0)
+    angle = -np.arctan2(y0 - y1, x1 - x0)
     # normalise to [0, 2*PI]
     rotation = angle - TWO_PI * np.floor((angle + PI) / TWO_PI)
     return np.array([cx, cy, width, height, rotation])
