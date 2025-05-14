@@ -1,12 +1,11 @@
 import ctypes
-from collections import OrderedDict
-from typing import Type
-from cuda import cuda, cudart, nvrtc
-import numpy as np
-import torch
-import ctypes
 import os
-import torch
+from collections import OrderedDict
+
+import numpy as np
+from cuda import cuda, cudart, nvrtc
+
+from ..utils.cuda_context_manager import CUDAContextManager
 
 try:
     import tensorrt as trt
@@ -21,6 +20,10 @@ except ImportError:
     ctypes.CDLL(os.path.join(trt_libs_path, "libnvinfer_builder_resource.so.8.6.1"))
     import tensorrt as trt
 
+# Initialize CUDA context before TensorRT
+cuda_manager = CUDAContextManager()
+cuda_manager.initialize()
+
 logger = trt.Logger(trt.Logger.ERROR)
 trt.init_libnvinfer_plugins(logger, "")
 
@@ -34,15 +37,13 @@ def _cudaGetErrorEnum(error):
     elif isinstance(error, nvrtc.nvrtcResult):
         return nvrtc.nvrtcGetErrorString(error)[1]
     else:
-        raise RuntimeError("Unknown error type: {}".format(error))
+        raise RuntimeError(f"Unknown error type: {error}")
 
 
 def checkCudaErrors(result):
     if result[0].value:
         raise RuntimeError(
-            "CUDA error code={}({})".format(
-                result[0].value, _cudaGetErrorEnum(result[0])
-            )
+            f"CUDA error code={result[0].value}({_cudaGetErrorEnum(result[0])})"
         )
     if len(result) == 1:
         return None
@@ -110,6 +111,7 @@ class TRTWrapper:
         return
 
     def setup(self, input_data: dict = {}) -> None:
+        # with profile_block(f"{self.model}::setup"):
         for name, value in self.buffer.items():
             _, device_buffer, _ = value
             if (
@@ -154,10 +156,7 @@ class TRTWrapper:
                 else:
                     n_byte = trt.volume(runtime_shape) * data_type.itemsize
                     host_buffer = np.empty(runtime_shape, dtype=trt.nptype(data_type))
-                    if (
-                        self.engine.get_tensor_location(name)
-                        == trt.TensorLocation.DEVICE
-                    ):
+                    if self.engine.get_tensor_location(name) == trt.TensorLocation.DEVICE:
                         device_buffer = checkCudaErrors(cudart.cudaMalloc(n_byte))
                     else:
                         device_buffer = None
@@ -179,6 +178,7 @@ class TRTWrapper:
         return
 
     def infer(self, stream=0) -> None:
+        # with profile_block(f"{self.model}::infer"):
         # Do inference and print output
         for name in self.tensor_name_list:
             if (

@@ -1,4 +1,5 @@
 from ..utils.load_model import load_model
+from ..utils.profile_util import profile
 
 
 class HubertStreaming:
@@ -10,17 +11,19 @@ class HubertStreaming:
         self.model, self.model_type = load_model(model_path, device=device, **kwargs)
         self.device = device
 
+    #@profile("HuBERT Forward")
     def forward_chunk(self, audio_chunk):
+        reshaped_input = audio_chunk.reshape(1, -1)
         if self.model_type == "onnx":
             output = self.model.run(None, {"input_values": audio_chunk.reshape(1, -1)})[0]
         elif self.model_type == "tensorrt":
-            self.model.setup({"input_values": audio_chunk.reshape(1, -1)})
+            self.model.setup({"input_values": reshaped_input})
             self.model.infer()
             output = self.model.buffer["encoding_out"][0]
         else:
             raise ValueError(f"Unsupported model type: {self.model_type}")
         return output
-    
+
     def __call__(self, audio_chunk):
         if self.model_type == "ori":
             output = self.model.forward_chunk(audio_chunk)

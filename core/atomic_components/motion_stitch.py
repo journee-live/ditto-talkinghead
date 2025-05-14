@@ -33,7 +33,7 @@ def ctrl_motion(x_d_info, **kwargs):
             x_d_info[k] = bin66_to_degree(x_d_info[k]) + kwargs[kk]
 
     # pose * alpha
-    for kk in ["alpha_pitch", "alpha_yaw", "alpha_roll"]:
+    for kk in ["alpha_pitch", "alpha_yaw", "alpha_roll", "alpha_exp"]:
         if kk in kwargs:
             k = kk[6:]
             x_d_info[k] = x_d_info[k] * kwargs[kk]
@@ -449,10 +449,20 @@ class MotionStitch:
 
         x_d_info = ctrl_motion(x_d_info, **kwargs)
 
-        if self.fade_type == "d0" and self.fade_dst is None:
-            self.fade_dst = copy.deepcopy(x_d_info)
+        if self.drive_eye:
+            if self.pose_s is None:
+                yaw_s = bin66_to_degree(x_s_info["yaw"]).item()
+                pitch_s = bin66_to_degree(x_s_info["pitch"]).item()
+                self.pose_s = [yaw_s, pitch_s]
+            x_d_info = _fix_gaze(self.pose_s, x_d_info)
 
         # fade
+        if self.fade_type == "d0" and self.fade_dst is None:
+            self.fade_dst = copy.deepcopy(x_d_info)
+            # self.fade_dst["pitch"] = 0.0
+            # self.fade_dst["yaw"] = 0.0
+            # self.fade_dst["roll"] = 0.0
+
         if "fade_alpha" in kwargs and self.fade_type in ["d0", "s"]:
             fade_alpha = kwargs["fade_alpha"]
             fade_keys = kwargs.get("fade_out_keys", self.fade_out_keys)
@@ -467,25 +477,40 @@ class MotionStitch:
                         self.fade_dst = fade_dst
             x_d_info = fade(x_d_info, fade_dst, fade_alpha, fade_keys)
 
-        if self.drive_eye:
-            if self.pose_s is None:
-                yaw_s = bin66_to_degree(x_s_info['yaw']).item()
-                pitch_s = bin66_to_degree(x_s_info['pitch']).item()
-                self.pose_s = [yaw_s, pitch_s]
-            x_d_info = _fix_gaze(self.pose_s, x_d_info)
-
         if self.x_s is not None:
             x_s = self.x_s
         else:
             x_s = transform_keypoint(x_s_info)
             if self.is_image_flag:
                 self.x_s = x_s
-        
+
         x_d = transform_keypoint(x_d_info)
-        
+
         if self.flag_stitching:
             x_d = self.stitch_net(x_s, x_d)
 
         self.idx += 1
 
-        return x_s, x_d
+        return x_s, x_d, x_d_info
+
+    def reset_state(self):
+        # Reset counter which affects eye blinking and other animations
+        self.idx = 0
+
+        # Clear cached fade destination state
+        self.fade_dst = None
+
+        # Reset pose tracking
+        self.pose_s = None
+        self.x_s = None
+
+        # Reset initial delta state
+        self.d0 = None
+
+        # Reset eye blinking state
+        if hasattr(self, "delta_eye_idx_list"):
+            if self.drive_eye and self.delta_eye_arr is not None:
+                N = 3000 if self.N_d == -1 else self.N_d
+                self.delta_eye_idx_list = _set_eye_blink_idx(
+                    N, len(self.delta_eye_arr), self.delta_eye_open_n
+                )
