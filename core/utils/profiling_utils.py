@@ -57,7 +57,7 @@ class FPSTracker:
 
     def log(self):
         """Log current statistics."""
-        logger.info(
+        logger.debug(
             f"{self.id} : FPS={self.average_fps:.4f} PartialFPS: {self.partial_average_fps:.4f} total_frames:{self.total_frames} partial_frames:{self.partial_frames} "
         )
         self.partial_frames = 0

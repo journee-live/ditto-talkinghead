@@ -24,12 +24,12 @@ def profile(label: str | None = None):
             result = func(*args, **kwargs)
             elapsed = time.perf_counter() - start
             if label:
-                logger.info(f"> {label} - {func.__qualname__}: {elapsed:.4f}s")
+                logger.debug(f"> {label} - {func.__qualname__}: {elapsed:.4f}s")
             else:
                 print_name = getattr(func.__self__, "get_name", lambda: None)()
                 if print_name is None:
                     print_name = getattr(func, "__qualname__", func.__name__)
-                logger.info(f"> {print_name}: {elapsed:.4f}s")
+                logger.debug(f"> {print_name}: {elapsed:.4f}s")
             return result
 
         return wrapper
@@ -46,7 +46,7 @@ def profile_block(label):
     start = time.perf_counter()
     yield
     elapsed = time.perf_counter() - start
-    logger.info(f">> {label}: {elapsed:.4f}s")
+    logger.debug(f">> {label}: {elapsed:.4f}s")
 
 
 def enable_profiling(enable=True):
