@@ -629,7 +629,7 @@ class StreamSDK:
                 audio_feat = np.concatenate([audio_feat, item_buffer], 0)
                 item_buffer = np.zeros((0, aud_feat_dim), dtype=np.float32)
 
-            logger.info(
+            logger.debug(
                 f"Processing new frames batch processing frames={processing_frames} is_end={is_end}"
             )
             if is_end:
@@ -845,7 +845,7 @@ class StreamSDK:
         audio = audio[processed_audio_idx:]
 
         if processed_audio_idx > 0:
-            logger.info(
+            logger.debug(
                 f"Processed {processed_audio_idx} audio samples pending frames {self.pending_frames.get()} expected frames {self.expected_frames.get()}"
             )
 
