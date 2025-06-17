@@ -734,7 +734,7 @@ class StreamSDK:
                     global_idx += real_valid_len
 
                 L = res_kp_seq.shape[1]
-                if L > seq_frames * 2:
+                if seq_frames * 2 < L:
                     cut_L = L - seq_frames * 2
                     res_kp_seq = res_kp_seq[:, cut_L:]
                     res_kp_seq_valid_start -= cut_L
@@ -743,7 +743,7 @@ class StreamSDK:
                     break
 
             L = len(audio_feat)
-            if L > seq_frames * 2:
+            if seq_frames * 2 < L:
                 cut_L = L - seq_frames * 2
                 audio_feat = audio_feat[cut_L:]
                 local_idx -= cut_L
@@ -789,8 +789,9 @@ class StreamSDK:
     def reset_audio_features(self):
         self.reset_audio2motion_needed.set()
 
-    def start_processing_audio(self):
+    def start_processing_audio(self, start_frame_idx: int = 0):
         logger.info("start_processing_audio")
+        self.starting_gen_frame_idx = start_frame_idx
         self.start_processing_time = time.monotonic()
         self.is_expecting_more_audio.set()
 
