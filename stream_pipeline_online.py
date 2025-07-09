@@ -323,7 +323,7 @@ class StreamSDK:
         # ======== Audio Feat Buffer ========
         self.reset_audio_features()
         # ======== Setup Worker Threads ========
-        QUEUE_MAX_SIZE = 150
+        QUEUE_MAX_SIZE = 0
         # self.QUEUE_TIMEOUT = None
 
         self.audio2motion_queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
@@ -395,13 +395,7 @@ class StreamSDK:
             if gen_frame_idx % 25 == 0:
                 self.fps_tracker.log()
 
-            while not self.stop_event.is_set():
-                try:
-                    self.frame_queue.put([frame_data.tobytes(), frame_idx, gen_frame_idx], timeout=0.1)
-                    break
-                except queue.Full:
-                    break
-                    
+            self.frame_queue.put([frame_data.tobytes(), frame_idx, gen_frame_idx])
             self.putback_queue.task_done()
 
     def decode_f3d_worker(self):
@@ -716,15 +710,9 @@ class StreamSDK:
                             gen_frame_idx
                             < self.expected_frames.get() + self.starting_gen_frame_idx
                         ):
-                            while not self.stop_event.is_set():
-                                try:
-                                    self.motion_stitch_queue.put(
-                                        [frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx],
-                                        timeout=0.1
-                                    )
-                                    break
-                                except queue.Full:
-                                    continue
+                            self.motion_stitch_queue.put(
+                                [frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx]
+                            )
                         else:
                             logger.info("No more frames expected from audio2motion!")
                             self.log_queues()
