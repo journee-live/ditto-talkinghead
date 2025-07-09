@@ -97,13 +97,7 @@ class StreamSDK:
 
     def _start_threads(self):
         """Initialize and start all worker threads for the pipeline"""
-        self.stop_event.set()
-        # Wait for the threads to finish if any are already launched
-        for thread in self.thread_list:
-            if thread.is_alive():
-                with profile_block(f"Thread join {thread.name}"):
-                    thread.join(timeout=2.0)
-        # Reset the stop event
+        self.close()
         self.stop_event.clear()
         # Reset all parameters and queues
         self.reset()
@@ -401,7 +395,13 @@ class StreamSDK:
             if gen_frame_idx % 25 == 0:
                 self.fps_tracker.log()
 
-            self.frame_queue.put([frame_data.tobytes(), frame_idx, gen_frame_idx])
+            while not self.stop_event.is_set():
+                try:
+                    self.frame_queue.put([frame_data.tobytes(), frame_idx, gen_frame_idx], timeout=0.1)
+                    break
+                except queue.Full:
+                    break
+                    
             self.putback_queue.task_done()
 
     def decode_f3d_worker(self):
