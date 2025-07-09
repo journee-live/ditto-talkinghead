@@ -716,10 +716,15 @@ class StreamSDK:
                             gen_frame_idx
                             < self.expected_frames.get() + self.starting_gen_frame_idx
                         ):
-                            self.motion_stitch_queue.put(
-                                [frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx],
-                                timeout=0.1,
-                            )
+                            while not self.stop_event.is_set():
+                                try:
+                                    self.motion_stitch_queue.put(
+                                        [frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx],
+                                        timeout=0.1
+                                    )
+                                    break
+                                except queue.Full:
+                                    continue
                         else:
                             logger.info("No more frames expected from audio2motion!")
                             self.log_queues()
