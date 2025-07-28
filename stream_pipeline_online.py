@@ -1,3 +1,4 @@
+import asyncio
 import queue
 import threading
 import time
@@ -6,6 +7,7 @@ import traceback
 import cv2
 import numpy as np
 from loguru import logger
+from pydantic import BaseModel
 
 from .core.atomic_components.audio2motion import Audio2Motion
 from .core.atomic_components.avatar_registrar import (
@@ -44,6 +46,22 @@ wav2feat_cfg:
 """
 
 
+class SDKDebugState(BaseModel):
+    hubert_features_queue: int
+    audio2motion_queue: int
+    motion_stitch_queue: int
+    putback_queue: int
+    warp_f3d_queue: int
+    decode_f3d_queue: int
+    frame_queue: int
+    pending_frames: int
+    expected_frames: int
+    starting_gen_frame_idx: int
+    is_expecting_more_audio: bool
+    hubert_finished: bool
+    reset_audio2motion_needed: bool
+
+
 class StreamSDK:
     def __init__(self, cfg_pkl, data_root, chunk_size, **kwargs):
         [
@@ -73,17 +91,19 @@ class StreamSDK:
         self.split_len = int(sum(self.chunk_size) * self.BYTES_PER_FRAME) + 80
         self.wav2feat = Wav2Feat(**wav2feat_cfg)
         self.starting_gen_frame_idx = 0
-        self.motion_output_enabled = False
+        self.motion_output_enabled = True
         self.idle_to_speech_transition = None
         self.fps_tracker = FPSTracker("streamSDK")
-        self.start_processing_time = 0
 
         # Initialize the stop event for thread control
         self.stop_event = threading.Event()
+        self._is_interrupting = False
         # Initialize reset flag
         self.reset_audio2motion_needed = threading.Event()
         self.reset_audio2motion_needed.set()
         self.is_expecting_more_audio = threading.Event()
+        self.is_processing_audio = False
+        self.waiting_for_first_interaction = True
 
         self.hubert_finished = threading.Event()
         self.hubert_finished.set()
@@ -91,16 +111,17 @@ class StreamSDK:
         self.waiting_for_first_audio = True
         self.expected_frames = AtomicCounter(0)
         self.pending_frames = AtomicCounter(0)
+        self.generated_frames = AtomicCounter(0)
+        self.threads_to_finish = AtomicCounter(0)
         # Create threads for pipeline stages
         self.thread_list = []
+        self.loop = asyncio.get_event_loop()
+
+    def is_interrupting(self) -> bool:
+        return self._is_interrupting
 
     def _start_threads(self):
         """Initialize and start all worker threads for the pipeline"""
-        self.close()
-        self.stop_event.clear()
-        # Reset all parameters and queues
-        self.reset()
-
         # Clear the thread list
         self.thread_list = []
 
@@ -133,6 +154,8 @@ class StreamSDK:
         # Start all threads
         for thread in self.thread_list:
             thread.start()
+
+        self.threads_to_finish.set(len(self.thread_list))
 
     def _merge_kwargs(self, default_kwargs, run_kwargs):
         for k, v in default_kwargs.items():
@@ -350,12 +373,13 @@ class StreamSDK:
     def putback_worker(self):
         try:
             self._putback_worker()
+            self.threads_to_finish.decrement(1)
         except Exception as e:
             self.worker_exception = e
-            self.stop_event.set()
+            self.interrupt()
 
     def _putback_worker(self):
-        last_frame_time = time.monotonic()
+        last_frame_time = time.perf_counter()
         while not self.stop_event.is_set():
             try:
                 item = self.putback_queue.get(timeout=0.05)
@@ -363,7 +387,6 @@ class StreamSDK:
                 continue
 
             if item is None:
-                self.putback_queue.task_done()
                 continue
 
             frame_idx, render_img, gen_frame_idx = item
@@ -372,10 +395,7 @@ class StreamSDK:
             res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
             self.pending_frames.decrement(1)
 
-            # logger.debug(
-            #     f"Generated video frame dt: {time.monotonic() - last_frame_time:.4f}"
-            # )
-            last_frame_time = time.monotonic()
+            last_frame_time = time.perf_counter()
             frame_bgr = cv2.cvtColor(res_frame_rgb, cv2.COLOR_RGB2BGR)
 
             # Encode frame to JPEG
@@ -384,25 +404,25 @@ class StreamSDK:
             if not self.fps_tracker.is_running:
                 self.fps_tracker.start()
 
-            self.fps_tracker.update(1)
-
-            if self.fps_tracker.total_frames == 1:
-                logger.info(
-                    f"Time until first frame: {time.monotonic() - self.start_processing_time}"
-                )
+            self.generated_frames.increment(1)
 
             if gen_frame_idx % 25 == 0:
                 self.fps_tracker.log()
 
+            if gen_frame_idx % 200 == 0:
+                self.log_queues()
+
+            self.fps_tracker.update(1)
+
             self.frame_queue.put([frame_data.tobytes(), frame_idx, gen_frame_idx])
-            self.putback_queue.task_done()
 
     def decode_f3d_worker(self):
         try:
             self._decode_f3d_worker()
+            self.threads_to_finish.decrement(1)
         except Exception as e:
             self.worker_exception = e
-            self.stop_event.set()
+            self.interrupt()
 
     def _decode_f3d_worker(self):
         while not self.stop_event.is_set():
@@ -412,20 +432,19 @@ class StreamSDK:
                 continue
 
             if item is None:
-                self.decode_f3d_queue.task_done()
                 continue
 
             frame_idx, f_3d, gen_frame_idx = item
             render_img = self.decode_f3d(f_3d)
             self.putback_queue.put([frame_idx, render_img, gen_frame_idx])
-            self.decode_f3d_queue.task_done()
 
     def warp_f3d_worker(self):
         try:
             self._warp_f3d_worker()
+            self.threads_to_finish.decrement(1)
         except Exception as e:
             self.worker_exception = e
-            self.stop_event.set()
+            self.interrupt()
 
     def _warp_f3d_worker(self):
         while not self.stop_event.is_set():
@@ -436,25 +455,23 @@ class StreamSDK:
                 continue
 
             if item is None:
-                self.warp_f3d_queue.task_done()
                 continue
 
             frame_idx, x_s, x_d, gen_frame_idx = item
             f_s = self.source_info["f_s_lst"][frame_idx]
             f_3d = self.warp_f3d(f_s, x_s, x_d)
             self.decode_f3d_queue.put([frame_idx, f_3d, gen_frame_idx])
-            self.warp_f3d_queue.task_done()
 
     def motion_stitch_worker(self):
         # try:
         self._motion_stitch_worker()
+        self.threads_to_finish.decrement(1)
 
     # except Exception as e:
     #     self.worker_exception = e
-    #     self.stop_event.set()
+    #     self.interrupt()
 
     def _motion_stitch_worker(self):
-        num_frames_stitched = 0
         while not self.stop_event.is_set():
             try:
                 item = self.motion_stitch_queue.get(timeout=0.05)
@@ -463,41 +480,39 @@ class StreamSDK:
                 continue
 
             if item is None:
-                self.motion_stitch_queue.task_done()
                 continue
 
             frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx = item
             x_s_info = self.source_info["x_s_info_lst"][frame_idx]
-            if gen_frame_idx > self.expected_frames.get() + self.starting_gen_frame_idx:
-                self.motion_stitch_queue.task_done()
-                continue
 
-            if (
-                gen_frame_idx
-                == self.expected_frames.get() + self.starting_gen_frame_idx - 1
-            ):
-                logger.info("Last frame on motion stitch worker!!!")
             x_s, x_d, x_d_info = self.motion_stitch(x_s_info, x_d_info, **ctrl_kwargs)
-            num_frames_stitched += 1
             if self.motion_output_enabled:
                 self.motion_stitch_out_queue.put([x_d_info, frame_idx, gen_frame_idx])
             self.warp_f3d_queue.put([frame_idx, x_s, x_d, gen_frame_idx])
-            self.motion_stitch_queue.task_done()
 
     def hubert_worker(self):
         try:
             self._hubert_worker()
+            self.threads_to_finish.decrement(1)
         except Exception as e:
             print("Error in hubert_worker:", e)
             traceback.print_exc()
             self.worker_exception = e
-            self.stop_event.set()
+            self.interrupt()
 
     def _hubert_worker(self):
         chunk_idx = 0
         while not self.stop_event.is_set():
             if self.reset_audio2motion_needed.is_set():
                 continue
+            if self.warp_f3d_queue.qsize() > 30:
+                time.sleep(0.05)
+                continue
+
+            # if self.fps_tracker.average_fps > 30:
+            #     # Make a pause in frame generation so we don't overload memory with frames for long answers
+            #     time.sleep(1.0)
+
             try:
                 audio_chunk = self.hubert_features_queue.get(timeout=0.05)  # audio feat
                 # Clear the finished flag as we have work to do
@@ -514,42 +529,81 @@ class StreamSDK:
 
             # Put the processed features in the queue
             self.audio2motion_queue.put((item, chunk_idx))
-            self.hubert_features_queue.task_done()
             chunk_idx += 1
 
     def audio2motion_worker(self):
-        self._audio2motion_worker()
+        try:
+            self._audio2motion_worker()
+            self.threads_to_finish.decrement(1)
+        except Exception as e:
+            self.worker_exception = e
+            self.interrupt()
 
     def interrupt(self):
+        if self._is_interrupting:
+            return
+
+        if self.worker_exception is not None:
+            logger.error(
+                f"Interrupting due to worker exception: {self.worker_exception}"
+            )
+            self.worker_exception = None
+
+        self.waiting_for_first_interaction = True
+        self._is_interrupting = True
+        self.end_processing_audio()
+        asyncio.run_coroutine_threadsafe(self._interrupt(), self.loop)
+
+    async def _interrupt(self):
         # We don't interrupt something that has already been interrupted before
         if self.waiting_for_first_audio:
             return
 
         self.waiting_for_first_audio = True
         logger.info("Interrupting all workers")
-        self.end_processing_audio()
+        self.stop_event.set()
+        # Wait for all threads to finish without blocking the event loop
+        logger.info("All workers have been interrupted and reset")
+        asyncio.create_task(self.wait_for_threads_to_finish())
+
+    async def wait_for_threads_to_finish(self):
+        while self.threads_to_finish.get() > 0:
+            await asyncio.sleep(0.005)
+
+        for thread in self.thread_list:
+            if thread.is_alive():
+                # This blocks the event loop so we make sure threads are finished before
+                thread.join()
+
+        self._is_interrupting = False
+
+        # Reset the stop event
+        self.stop_event.clear()
+
+        # Reset all parameters and queues
+        self.reset()
 
         # Restart the threads
         self._start_threads()
 
-        logger.info("All workers have been interrupted and reset")
-
     def log_queues(self):
-        logger.info("--------------------------------------------------------------")
-        logger.info(f"Audio2Motion queue size: {self.audio2motion_queue.qsize()}")
-        logger.info(f"MotionStitch queue size: {self.motion_stitch_queue.qsize()}")
-        logger.info(f"WarpF3D queue size: {self.warp_f3d_queue.qsize()}")
-        logger.info(f"DecodeF3D queue size: {self.decode_f3d_queue.qsize()}")
-        logger.info(f"Frame queue size: {self.frame_queue.qsize()}")
-        logger.info(f"Hubert features queue size: {self.hubert_features_queue.qsize()}")
-        logger.info(f"Putback queue size: {self.putback_queue.qsize()}")
-        logger.info(f"pending frames: {self.pending_frames.get()}")
-        logger.info(f"expected franes: {self.expected_frames.get()}")
-        logger.info(f"starting_gen_frame_idx: {self.starting_gen_frame_idx}")
-        logger.info(f"is_expecting_more_audio: {self.is_expecting_more_audio.is_set()}")
-        logger.info(f"hubert_finished: {self.hubert_finished.is_set()}")
-        logger.info(
-            f"reset_audio2motion_needed: {self.reset_audio2motion_needed.is_set()}"
+        logger.info(self.get_debug_state().model_dump_json(indent=4))
+
+    def get_debug_state(self):
+        return SDKDebugState(
+            hubert_features_queue=self.hubert_features_queue.qsize(),
+            audio2motion_queue=self.audio2motion_queue.qsize(),
+            motion_stitch_queue=self.motion_stitch_queue.qsize(),
+            putback_queue=self.putback_queue.qsize(),
+            warp_f3d_queue=self.warp_f3d_queue.qsize(),
+            decode_f3d_queue=self.decode_f3d_queue.qsize(),
+            frame_queue=self.frame_queue.qsize(),
+            pending_frames=self.pending_frames.get(),
+            expected_frames=self.expected_frames.get(),
+            starting_gen_frame_idx=self.starting_gen_frame_idx,
+            is_expecting_more_audio=self.is_expecting_more_audio.is_set(),
+            hubert_finished=self.hubert_finished.is_set(),
+            reset_audio2motion_needed=self.reset_audio2motion_needed.is_set(),
         )
 
     def _audio2motion_worker(self):
@@ -557,12 +611,10 @@ class StreamSDK:
         valid_clip_len = self.audio2motion.valid_clip_len
         aud_feat_dim = self.wav2feat.feat_dim
         item = None
-        started_processing = False
-        is_end = False
-        item_buffer = None
+        all_audio_processed = True
         while not self.stop_event.is_set():
-            if is_end:
-                break
+            if all_audio_processed:
+                self.reset_audio2motion_needed.wait()
 
             try:
                 # reset audio2motion to generate new answers
@@ -574,10 +626,11 @@ class StreamSDK:
                     global_idx = 0  # frame idx, for template
                     local_idx = 0  # for cur audio_feat
                     gen_frame_idx = self.starting_gen_frame_idx
+                    started_processing = False
                     res_kp_seq = None
                     is_end = False
-                    first_valid_clip = False
                     processing_frames = 0
+                    all_audio_processed = False
                     item_buffer = np.zeros((0, aud_feat_dim), dtype=np.float32)
                     res_kp_seq_valid_start = None if self.online_mode else 0
                     audio_feat = self.initial_audio_feat
@@ -606,7 +659,10 @@ class StreamSDK:
                     # logger.warning("Audio2Motion queue is empty before ending")
                     continue
 
-            will_mark_task_done = item is not None
+            # We don't have anything else to do
+            if is_end:
+                all_audio_processed = True
+
             # This prevents a crash when placing breakpoints on other threads
             if item is not None:
                 item_buffer = np.concatenate([item_buffer, item], 0)
@@ -615,8 +671,6 @@ class StreamSDK:
             if not is_end and item_buffer.shape[0] < valid_clip_len:
                 # wait at least valid_clip_len new item
                 # logger.info("Waiting for more audio features")
-                if will_mark_task_done:
-                    self.audio2motion_queue.task_done()
                 continue
             else:
                 audio_feat = np.concatenate([audio_feat, item_buffer], 0)
@@ -625,13 +679,9 @@ class StreamSDK:
             logger.debug(
                 f"Processing new frames batch processing frames={processing_frames} is_end={is_end}"
             )
-            if is_end:
-                logger.info("Audio2Motion worker is ending")
 
             while True:
                 if self.stop_event.is_set():
-                    if will_mark_task_done:
-                        self.audio2motion_queue.task_done()
                     return
 
                 aud_feat_slice = audio_feat[
@@ -664,9 +714,6 @@ class StreamSDK:
                 # )
                 res_kp_seq = self.audio2motion(aud_cond, res_kp_seq)
                 if res_kp_seq_valid_start is None:
-                    logger.info(
-                        f"Time until res_kp_seq_valid_start: {time.monotonic() - self.start_processing_time}"
-                    )
                     # online mode, first chunk
                     res_kp_seq_valid_start = (
                         res_kp_seq.shape[1] - self.audio2motion.fuse_length
@@ -678,26 +725,16 @@ class StreamSDK:
                     global_idx += real_valid_len
                     continue
                 else:
-                    if not first_valid_clip:
-                        first_valid_clip = True
-                        logger.info(
-                            f"Time until first valid clip: {time.monotonic() - self.start_processing_time}"
-                        )
-
                     valid_res_kp_seq = res_kp_seq[
                         :,
                         res_kp_seq_valid_start : res_kp_seq_valid_start
                         + real_valid_len,
                     ]
-                    # with profile_block("audio2motion::cvt_fmt"):
                     x_d_info_list = self.audio2motion.cvt_fmt(valid_res_kp_seq)
 
-                    # assert(real_valid_len == len(x_d_info_list))
                     for x_d_info in x_d_info_list:
                         # early exit if stop event is set to avoid having to wait
                         if self.stop_event.is_set():
-                            if will_mark_task_done:
-                                self.audio2motion_queue.task_done()
                             return
 
                         frame_idx = _mirror_index(
@@ -710,12 +747,12 @@ class StreamSDK:
                             < self.expected_frames.get() + self.starting_gen_frame_idx
                         ):
                             self.motion_stitch_queue.put(
-                                [frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx]
+                                [frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx],
+                                timeout=0.1,
                             )
                         else:
                             logger.info("No more frames expected from audio2motion!")
-                            self.log_queues()
-                            # self.reset_audio2motion_needed.set()
+                            self.reset_audio2motion_needed.set()
                             break
 
                         gen_frame_idx += 1
@@ -740,10 +777,7 @@ class StreamSDK:
                 audio_feat = audio_feat[cut_L:]
                 local_idx -= cut_L
 
-            if will_mark_task_done and not is_end:
-                self.audio2motion_queue.task_done()
-
-        # self.motion_stitch_queue.put(None)
+        self.motion_stitch_queue.put(None)
 
     def close(self):
         # flush frames
@@ -759,7 +793,11 @@ class StreamSDK:
             raise self.worker_exception
 
     def reset(self):
-        logger.info("reset")
+        logger.info(f"reset _is_interrupting={self._is_interrupting}")
+        if self._is_interrupting:
+            return
+
+        self.end_processing_audio()
         self.fps_tracker.stop()
         self.motion_stitch.reset_state()
         self.audio2motion.reset_state()
@@ -775,6 +813,7 @@ class StreamSDK:
         self.motion_stitch_out_queue.queue.clear()
 
         self.expected_frames.set(0)
+        self.generated_frames.set(0)
         self.pending_frames.set(0)
         self.reset_audio_features()
 
@@ -782,12 +821,14 @@ class StreamSDK:
         self.reset_audio2motion_needed.set()
 
     def start_processing_audio(
-        self, start_frame_idx: int = 0, filter_amount: float = 0.0
+        self, start_frame_idx: int = 0, filter_amount: float = 0.0, mouth_opening_scale: float = 1.0
     ):
         logger.info("start_processing_audio")
+        self.is_processing_audio = True
         self.starting_gen_frame_idx = start_frame_idx
         self.audio2motion.filter_amount = filter_amount
-        self.start_processing_time = time.monotonic()
+        self.motion_stitch.mouth_opening_scale = mouth_opening_scale
+        self.waiting_for_first_interaction = False
         self.is_expecting_more_audio.set()
 
     def set_motion_output_enabled(self, motion_output_enabled: bool = False):
@@ -795,6 +836,7 @@ class StreamSDK:
 
     def end_processing_audio(self):
         logger.info("end_processing_audio")
+        self.is_processing_audio = False
         self.is_expecting_more_audio.clear()
 
     def process_audio_chunk(self, audio_chunk):
@@ -828,6 +870,8 @@ class StreamSDK:
                     mode="constant",
                 )
                 processed_audio_idx = idx + len(audio_chunk)
+                # self.expected_frames.increment(5)
+                # self.pending_frames.increment(5)
             else:
                 processed_audio_idx = idx + self.present_size
             # Process chunk and yield frames
@@ -842,16 +886,15 @@ class StreamSDK:
 
         if processed_audio_idx > 0:
             logger.debug(
-                f"Processed {processed_audio_idx} audio samples pending frames {self.pending_frames.get()} expected frames {self.expected_frames.get()}"
+                f"Processed {processed_audio_idx} audio samples pending frames {self.pending_frames.get()} leftover audio: {len(audio)}"
             )
 
         return audio
 
     def has_pending_frames(self):
+        if self._is_interrupting:
+            return False
+
         pending_frames = self.pending_frames.get()
         frame_queue_size = self.frame_queue.qsize()
-        return (
-            pending_frames > 0
-            or frame_queue_size > 0
-            or self.is_expecting_more_audio.is_set()
-        )
+        return pending_frames > 0 or frame_queue_size > 0
