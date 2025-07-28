@@ -1,10 +1,10 @@
 import copy
 import random
+
 import numpy as np
 from scipy.special import softmax
 
 from ..models.stitch_network import StitchNetwork
-
 
 """
 # __init__
@@ -50,7 +50,7 @@ def fade(x_d_info, dst, alpha, keys=None):
     if keys is None:
         keys = x_d_info.keys()
     for k in keys:
-        if k == 'kp':
+        if k == "kp":
             continue
         x_d_info[k] = x_d_info[k] * alpha + dst[k] * (1 - alpha)
     return x_d_info
@@ -67,8 +67,7 @@ def ctrl_vad(x_d_info, dst, alpha):
     x_d_info["exp"] = exp * alpha + exp_dst * (1 - alpha)
 
     return x_d_info
-    
-    
+
 
 def _mix_s_d_info(
     x_s_info,
@@ -187,26 +186,28 @@ def _eye_delta(exp, dx=0, dy=0):
     exp[0, 46] += dy * -0.001
     return exp
 
+
 def _fix_gaze(pose_s, x_d_info):
     x_ratio = 0.26
     y_ratio = 0.28
-    
+
     yaw_s, pitch_s = pose_s
-    yaw_d = bin66_to_degree(x_d_info['yaw']).item()
-    pitch_d = bin66_to_degree(x_d_info['pitch']).item()
+    yaw_d = bin66_to_degree(x_d_info["yaw"]).item()
+    pitch_d = bin66_to_degree(x_d_info["pitch"]).item()
 
     delta_yaw = yaw_d - yaw_s
     delta_pitch = pitch_d - pitch_s
 
     dx = delta_yaw * x_ratio
     dy = delta_pitch * y_ratio
-    
-    x_d_info['exp'] = _eye_delta(x_d_info['exp'], dx, dy)
+
+    x_d_info["exp"] = _eye_delta(x_d_info["exp"], dx, dy)
     return x_d_info
 
 
 def get_rotation_matrix(pitch_, yaw_, roll_):
-    """ the input is in degree
+    """
+    The input is in degree
     """
     # transform to radian
     pitch = pitch_ / 180 * np.pi
@@ -226,23 +227,20 @@ def get_rotation_matrix(pitch_, yaw_, roll_):
     zeros = np.zeros((bs, 1), dtype=np.float32)
     x, y, z = pitch, yaw, roll
 
-    rot_x = np.concatenate([
-        ones, zeros, zeros,
-        zeros, np.cos(x), -np.sin(x),
-        zeros, np.sin(x), np.cos(x)
-    ], axis=1).reshape(bs, 3, 3)
+    rot_x = np.concatenate(
+        [ones, zeros, zeros, zeros, np.cos(x), -np.sin(x), zeros, np.sin(x), np.cos(x)],
+        axis=1,
+    ).reshape(bs, 3, 3)
 
-    rot_y = np.concatenate([
-        np.cos(y), zeros, np.sin(y),
-        zeros, ones, zeros,
-        -np.sin(y), zeros, np.cos(y)
-    ], axis=1).reshape(bs, 3, 3)
+    rot_y = np.concatenate(
+        [np.cos(y), zeros, np.sin(y), zeros, ones, zeros, -np.sin(y), zeros, np.cos(y)],
+        axis=1,
+    ).reshape(bs, 3, 3)
 
-    rot_z = np.concatenate([
-        np.cos(z), -np.sin(z), zeros,
-        np.sin(z), np.cos(z), zeros,
-        zeros, zeros, ones
-    ], axis=1).reshape(bs, 3, 3)
+    rot_z = np.concatenate(
+        [np.cos(z), -np.sin(z), zeros, np.sin(z), np.cos(z), zeros, zeros, zeros, ones],
+        axis=1,
+    ).reshape(bs, 3, 3)
 
     rot = np.matmul(np.matmul(rot_z, rot_y), rot_x)
     return np.transpose(rot, (0, 2, 1))
@@ -250,14 +248,14 @@ def get_rotation_matrix(pitch_, yaw_, roll_):
 
 def transform_keypoint(kp_info: dict):
     """
-    transform the implicit keypoints with the pose, shift, and expression deformation
+    Transform the implicit keypoints with the pose, shift, and expression deformation
     kp: BxNx3
     """
-    kp = kp_info['kp']    # (bs, k, 3)
-    pitch, yaw, roll = kp_info['pitch'], kp_info['yaw'], kp_info['roll']
+    kp = kp_info["kp"]  # (bs, k, 3)
+    pitch, yaw, roll = kp_info["pitch"], kp_info["yaw"], kp_info["roll"]
 
-    t, exp = kp_info['t'], kp_info['exp']
-    scale = kp_info['scale']
+    t, exp = kp_info["t"], kp_info["exp"]
+    scale = kp_info["scale"]
 
     pitch = bin66_to_degree(pitch)
     yaw = bin66_to_degree(yaw)
@@ -269,10 +267,12 @@ def transform_keypoint(kp_info: dict):
     else:
         num_kp = kp.shape[1]  # Bxnum_kpx3
 
-    rot_mat = get_rotation_matrix(pitch, yaw, roll)    # (bs, 3, 3)
+    rot_mat = get_rotation_matrix(pitch, yaw, roll)  # (bs, 3, 3)
 
     # Eqn.2: s * (R * x_c,s + exp) + t
-    kp_transformed = np.matmul(kp.reshape(bs, num_kp, 3), rot_mat) + exp.reshape(bs, num_kp, 3)
+    kp_transformed = np.matmul(kp.reshape(bs, num_kp, 3), rot_mat) + exp.reshape(
+        bs, num_kp, 3
+    )
     kp_transformed *= scale[..., None]  # (bs, k, 3) * (bs, 1, 1) = (bs, k, 3)
     kp_transformed[:, :, 0:2] += t[:, None, 0:2]  # remove z, only apply tx ty
 
@@ -290,7 +290,7 @@ class MotionStitch:
         # only for offline (make start|end eye open)
         if N_d == self.N_d:
             return
-        
+
         self.N_d = N_d
         if self.drive_eye and self.delta_eye_arr is not None:
             N = 3000 if self.N_d == -1 else self.N_d
@@ -307,7 +307,7 @@ class MotionStitch:
         delta_eye_arr=None,  # fix eye
         delta_eye_open_n=-1,  # int|list
         fade_out_keys=("exp",),
-        fade_type="",   # "" | "d0" | "s"
+        fade_type="",  # "" | "d0" | "s"
         flag_stitching=True,
         is_image_flag=True,
         x_s_info=None,
@@ -320,7 +320,7 @@ class MotionStitch:
             if self.is_image_flag:
                 self.use_d_keys = ("exp", "pitch", "yaw", "roll", "t")
             else:
-                self.use_d_keys = ("exp", )
+                self.use_d_keys = ("exp",)
         else:
             self.use_d_keys = use_d_keys
 
@@ -339,6 +339,7 @@ class MotionStitch:
         self.fade_out_keys = fade_out_keys
         self.fade_type = fade_type
         self.flag_stitching = flag_stitching
+        self.mouth_opening_scale = 1.0
 
         _eye = [11, 13, 15, 16, 18]
         _lip = [6, 12, 14, 17, 19, 20]
@@ -368,8 +369,8 @@ class MotionStitch:
         self.x_s = None
         self.fade_dst = None
         if self.is_image_flag and x_s_info is not None:
-            yaw_s = bin66_to_degree(x_s_info['yaw']).item()
-            pitch_s = bin66_to_degree(x_s_info['pitch']).item()
+            yaw_s = bin66_to_degree(x_s_info["yaw"]).item()
+            pitch_s = bin66_to_degree(x_s_info["pitch"]).item()
             self.pose_s = [yaw_s, pitch_s]
             self.x_s = transform_keypoint(x_s_info)
 
@@ -377,9 +378,9 @@ class MotionStitch:
                 self.fade_dst = copy.deepcopy(x_s_info)
 
         if ch_info is not None:
-            self.scale_a = ch_info['x_s_info_lst'][0]['scale'].item()
+            self.scale_a = ch_info["x_s_info_lst"][0]["scale"].item()
             if x_s_info is not None:
-                self.scale_b = x_s_info['scale'].item()
+                self.scale_b = x_s_info["scale"].item()
                 self.scale_ratio = self.scale_a / self.scale_b
                 self._set_scale_ratio(self.scale_ratio)
             else:
@@ -396,27 +397,33 @@ class MotionStitch:
         if scale_ratio == 1:
             return
         if isinstance(self.use_d_keys, dict):
-            self.use_d_keys = {k: v * (scale_ratio if k in {"exp", "pitch", "yaw", "roll"} else 1) for k, v in self.use_d_keys.items()}
+            self.use_d_keys = {
+                k: v * (scale_ratio if k in {"exp", "pitch", "yaw", "roll"} else 1)
+                for k, v in self.use_d_keys.items()
+            }
         else:
-            self.use_d_keys = {k: scale_ratio if k in {"exp", "pitch", "yaw", "roll"} else 1 for k in self.use_d_keys}
+            self.use_d_keys = {
+                k: scale_ratio if k in {"exp", "pitch", "yaw", "roll"} else 1
+                for k in self.use_d_keys
+            }
 
     @staticmethod
     def _merge_kwargs(default_kwargs, run_kwargs):
         if default_kwargs is None:
             return run_kwargs
-        
+
         for k, v in default_kwargs.items():
             if k not in run_kwargs:
                 run_kwargs[k] = v
         return run_kwargs
-    
+
     def __call__(self, x_s_info, x_d_info, **kwargs):
         # return x_s, x_d
 
         kwargs = self._merge_kwargs(self.overall_ctrl_info, kwargs)
 
         if self.scale_ratio is None:
-            self.scale_b = x_s_info['scale'].item()
+            self.scale_b = x_s_info["scale"].item()
             self.scale_ratio = self.scale_a / self.scale_b
             self._set_scale_ratio(self.scale_ratio)
 
@@ -444,8 +451,13 @@ class MotionStitch:
             self.fix_exp_a3,
         )
 
-        if kwargs.get("vad_alpha", 1) < 1:
-            x_d_info = ctrl_vad(x_d_info, x_s_info, kwargs.get("vad_alpha", 1))
+        vad_alpha = kwargs.get("vad_alpha", 1) * self.mouth_opening_scale
+        if vad_alpha < 1:
+            x_d_info = ctrl_vad(
+                x_d_info,
+                x_s_info,
+                vad_alpha,
+            )
 
         x_d_info = ctrl_motion(x_d_info, **kwargs)
 
