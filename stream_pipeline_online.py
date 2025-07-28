@@ -19,7 +19,6 @@ from .core.atomic_components.motion_stitch import MotionStitch
 from .core.atomic_components.putback import PutBack
 from .core.atomic_components.warp_f3d import WarpF3D
 from .core.atomic_components.wav2feat import Wav2Feat
-from .core.utils.profile_util import profile_block
 from .core.utils.profiling_utils import FPSTracker
 from .core.utils.threading_utils import AtomicCounter
 
@@ -782,9 +781,12 @@ class StreamSDK:
     def reset_audio_features(self):
         self.reset_audio2motion_needed.set()
 
-    def start_processing_audio(self, start_frame_idx: int = 0):
+    def start_processing_audio(
+        self, start_frame_idx: int = 0, filter_amount: float = 0.0
+    ):
         logger.info("start_processing_audio")
         self.starting_gen_frame_idx = start_frame_idx
+        self.audio2motion.filter_amount = filter_amount
         self.start_processing_time = time.monotonic()
         self.is_expecting_more_audio.set()
 

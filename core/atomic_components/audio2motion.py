@@ -1,7 +1,6 @@
 import numpy as np
 
 from ..models.lmdm import LMDM
-from ..utils.profile_util import profile
 
 """
 lmdm_cfg = {
@@ -82,6 +81,7 @@ class Audio2Motion:
         v_min_max_for_clip=None,
         smo_k_d=3,
     ):
+        self.filter_amount = 0.1
         self.smo_k_d = smo_k_d
         self.overlap_v2 = overlap_v2
         self.seq_frames = self.lmdm.seq_frames
@@ -164,6 +164,7 @@ class Audio2Motion:
             - 0: Always update condition from the previous frame (continuous motion)
             - >0: Periodically reset to source condition every fix_kp_cond clips
                  This creates more varied motion by preventing drift over time
+
         """
         if self.fix_kp_cond == 0:  # No reset, continuous update mode
             # Take the previous frame as the new condition
@@ -187,10 +188,11 @@ class Audio2Motion:
                 self.kp_cond = res_kp_seq[:, idx - 1]
 
     def _smo(self, res_kp_seq, s, e):
-        if self.smo_k_d > 1:
+        smo = int(self.smo_k_d * self.filter_amount * 10)
+        if smo > 1:
             new_res_kp_seq = res_kp_seq.copy()
             n = res_kp_seq.shape[1]
-            half_k = self.smo_k_d // 2
+            half_k = smo // 2
 
             # Apply standard smoothing first
             for i in range(s, e):
@@ -208,37 +210,36 @@ class Audio2Motion:
 
         # Apply additional low-pass filtering to further reduce high frequencies
         # This is a simple exponential moving average
-        alpha = 0.1  # Higher values = more smoothing, lower frequencies
-        filtered_kp_seq = res_kp_seq.copy()
+        if self.filter_amount > 0:
+            filtered_kp_seq = res_kp_seq.copy()
 
-        for i in range(s + 1, e):
-            # Create a mask where True means "apply smoothing" and False means "keep original"
-            # Start with all True (smooth everything)
-            smooth_mask = np.ones(202, dtype=bool)
+            for i in range(s + 1, e):
+                # Create a mask where True means "apply smoothing" and False means "keep original"
+                # Start with all True (smooth everything)
+                smooth_mask = np.ones(202, dtype=bool)
 
-            # Set expression indices to False (don't smooth these)
-            smooth_mask[expression_indices] = False
+                # Set expression indices to False (don't smooth these)
+                smooth_mask[expression_indices] = False
 
-            # Apply smoothing only to non-expression parameters (like head movement)
-            # For expression parameters, keep the original values
-            smoothed_values = (
-                alpha * res_kp_seq[:, i - 1, :202]
-                + (1 - alpha) * filtered_kp_seq[:, i, :202]
-            )
+                # Apply smoothing only to non-expression parameters (like head movement)
+                # For expression parameters, keep the original values
+                smoothed_values = (
+                    self.filter_amount * res_kp_seq[:, i - 1, :202]
+                    + (1 - self.filter_amount) * filtered_kp_seq[:, i, :202]
+                )
 
-            # Only update the parameters that should be smoothed
-            for j in range(202):
-                if smooth_mask[j]:
-                    res_kp_seq[:, i, j] = smoothed_values[:, j]
+                # Only update the parameters that should be smoothed
+                for j in range(202):
+                    if smooth_mask[j]:
+                        res_kp_seq[:, i, j] = smoothed_values[:, j]
 
         return res_kp_seq
 
-    #@profile("Audio2Motion Forward")
+    # @profile("Audio2Motion Forward")
     def __call__(self, aud_cond, res_kp_seq=None):
         """
         aud_cond: (1, seq_frames, dim)
         """
-
         pred_kp_seq = self.lmdm(self.kp_cond, aud_cond, self.sampling_timesteps)
         if res_kp_seq is None:
             res_kp_seq = pred_kp_seq  # [1, seq_frames, dim]
@@ -290,7 +291,9 @@ class Audio2Motion:
 
         x_d_info_list = []
         for i in range(tmp_res_kp_seq.shape[0]):
-            x_d_info = _cvt_LP_motion_info(tmp_res_kp_seq[i], "arr2dic")  # {k: (1, dim)}
+            x_d_info = _cvt_LP_motion_info(
+                tmp_res_kp_seq[i], "arr2dic"
+            )  # {k: (1, dim)}
             x_d_info_list.append(x_d_info)
         return x_d_info_list
 
