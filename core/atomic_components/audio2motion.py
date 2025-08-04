@@ -209,30 +209,7 @@ class Audio2Motion:
         expression_indices = eye_indices + lip_indices
 
         # Apply additional low-pass filtering to further reduce high frequencies
-        # This is a simple exponential moving average
-        if self.filter_amount > 0:
-            filtered_kp_seq = res_kp_seq.copy()
-
-            for i in range(s + 1, e):
-                # Create a mask where True means "apply smoothing" and False means "keep original"
-                # Start with all True (smooth everything)
-                smooth_mask = np.ones(202, dtype=bool)
-
-                # Set expression indices to False (don't smooth these)
-                smooth_mask[expression_indices] = False
-
-                # Apply smoothing only to non-expression parameters (like head movement)
-                # For expression parameters, keep the original values
-                smoothed_values = (
-                    self.filter_amount * res_kp_seq[:, i - 1, :202]
-                    + (1 - self.filter_amount) * filtered_kp_seq[:, i, :202]
-                )
-
-                # Only update the parameters that should be smoothed
-                for j in range(202):
-                    if smooth_mask[j]:
-                        res_kp_seq[:, i, j] = smoothed_values[:, j]
-
+        # This is a simple exponential moving average        
         return res_kp_seq
 
     # @profile("Audio2Motion Forward")
