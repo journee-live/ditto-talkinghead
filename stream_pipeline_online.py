@@ -238,7 +238,7 @@ class StreamSDK:
         self.ch_info = kwargs.get("ch_info", None)  # dict of np.ndarray
 
         # -- audio2motion: setup --
-        self.overlap_v2 = kwargs.get("overlap_v2", 10)
+        self.overlap_v2 = kwargs.get("overlap_v2", 70)
         self.fix_kp_cond = kwargs.get("fix_kp_cond", 0)
         self.fix_kp_cond_dim = kwargs.get("fix_kp_cond_dim", None)  # [ds,de]
         self.sampling_timesteps = kwargs.get("sampling_timesteps", 50)
@@ -495,7 +495,7 @@ class StreamSDK:
             self._hubert_worker()
             self.threads_to_finish.decrement(1)
         except Exception as e:
-            print("Error in hubert_worker:", e)
+            logger.error("Error in hubert_worker:", e)
             traceback.print_exc()
             self.worker_exception = e
             self.interrupt()
@@ -821,7 +821,10 @@ class StreamSDK:
         self.reset_audio2motion_needed.set()
 
     def start_processing_audio(
-        self, start_frame_idx: int = 0, filter_amount: float = 0.0, mouth_opening_scale: float = 1.0
+        self,
+        start_frame_idx: int = 0,
+        filter_amount: float = 0.0,
+        mouth_opening_scale: float = 1.0,
     ):
         logger.info("start_processing_audio")
         self.is_processing_audio = True
