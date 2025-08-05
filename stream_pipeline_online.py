@@ -372,7 +372,6 @@ class StreamSDK:
             self.stop_event.set()
 
     def _putback_worker(self):
-        last_frame_time = time.monotonic()
         while not self.stop_event.is_set():
             try:
                 item = self.putback_queue.get(timeout=0.05)
@@ -389,10 +388,6 @@ class StreamSDK:
             res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
             self.pending_frames.decrement(1)
 
-            # logger.debug(
-            #     f"Generated video frame dt: {time.monotonic() - last_frame_time:.4f}"
-            # )
-            last_frame_time = time.monotonic()
             frame_bgr = cv2.cvtColor(res_frame_rgb, cv2.COLOR_RGB2BGR)
 
             # Encode frame to JPEG
