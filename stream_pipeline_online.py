@@ -485,10 +485,6 @@ class StreamSDK:
 
             frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx = item
             x_s_info = self.source_info["x_s_info_lst"][frame_idx]
-            if gen_frame_idx > self.expected_frames.get() + self.starting_gen_frame_idx:
-                self.motion_stitch_queue.task_done()
-                continue
-
             if (
                 gen_frame_idx
                 == self.expected_frames.get() + self.starting_gen_frame_idx - 1
@@ -544,7 +540,7 @@ class StreamSDK:
 
     def audio2motion_worker(self):
         try:
-            self._audio2motion_worker()            
+            self._audio2motion_worker()
         except Exception as e:
             self.worker_exception = e
             self.stop_event.set()
@@ -797,7 +793,10 @@ class StreamSDK:
         self.reset_audio2motion_needed.set()
 
     def start_processing_audio(
-        self, start_frame_idx: int = 0, filter_amount: float = 0.0, mouth_opening_scale: float = 1.0
+        self,
+        start_frame_idx: int = 0,
+        filter_amount: float = 0.0,
+        mouth_opening_scale: float = 1.0,
     ):
         logger.info("start_processing_audio")
         self.starting_gen_frame_idx = start_frame_idx
@@ -870,4 +869,17 @@ class StreamSDK:
             pending_frames > 0
             or frame_queue_size > 0
             or self.is_expecting_more_audio.is_set()
+        )
+
+    def is_last_frame(self):
+        pending_frames = self.pending_frames.get()
+        frame_queue_size = self.frame_queue.qsize()
+        has_pending_frames = pending_frames > 0
+        is_last_frame_in_queue = frame_queue_size == 1
+        is_not_expecting_more_audio = not self.is_expecting_more_audio.is_set()
+
+        return (
+            has_pending_frames
+            and is_last_frame_in_queue
+            and is_not_expecting_more_audio
         )
