@@ -874,7 +874,7 @@ class StreamSDK:
         is_not_expecting_more_audio = not self.is_expecting_more_audio.is_set()
 
         return (
-            has_pending_frames
+            not has_pending_frames
             and is_last_frame_in_queue
             and is_not_expecting_more_audio
         )
