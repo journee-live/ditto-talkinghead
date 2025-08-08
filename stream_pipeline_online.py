@@ -754,7 +754,7 @@ class StreamSDK:
     def close(self):
         # flush frames
         self.stop_event.set()
-        self.reset()
+        #self.reset()
 
         # Wait for all threads to finish
         for thread in self.thread_list:
