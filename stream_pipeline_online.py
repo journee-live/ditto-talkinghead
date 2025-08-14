@@ -616,27 +616,19 @@ class StreamSDK:
                     and self.audio2motion_queue.qsize() == 0
                 )
                 if not is_end:
-                    try:
-                        item, chunk_idx = self.audio2motion_queue.get(
-                            timeout=0.05
-                        )  # audio feat
-                        if not started_processing:
-                            logger.info("Starting processing audio2motion")
-                            started_processing = True
+                    item, chunk_idx = self.audio2motion_queue.get(
+                        timeout=0.05
+                    )  # audio feat
+                    if not started_processing:
+                        logger.info("Starting processing audio2motion")
+                        started_processing = True
 
-                    except queue.Empty:
-                        continue
-                    except Exception as e:
-                        logger.error(f"Error in audio2motion:{e}")
-                        break
 
             except queue.Empty:
                 # logger.info(f"Audio2Motion queue is empty, is_end={is_end}")
-                # IF queue is empty and we expect more audio we wait until it comes
-                item = None
-                if not is_end:
-                    # logger.warning("Audio2Motion queue is empty before ending")
-                    continue
+                continue
+            except Exception as e:
+                logger.error(f"Error in audio2motion:{e}")
 
             # We don't have anything else to do
             if is_end:
@@ -765,7 +757,7 @@ class StreamSDK:
 
         # Wait for all threads to finish
         for thread in self.thread_list:
-            thread.join(timeout=4.0)
+            thread.join(timeout=1.0)
 
             if thread.is_alive():
                 logger.warning(f"THREAD {thread.name} didn't join")
