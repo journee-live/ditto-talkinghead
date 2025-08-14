@@ -623,13 +623,12 @@ class StreamSDK:
                         logger.info("Starting processing audio2motion")
                         started_processing = True
 
+
             except queue.Empty:
                 # logger.info(f"Audio2Motion queue is empty, is_end={is_end}")
-                # IF queue is empty and we expect more audio we wait until it comes
-                item = None
-                if not is_end:
-                    # logger.warning("Audio2Motion queue is empty before ending")
-                    continue
+                continue
+            except Exception as e:
+                logger.error(f"Error in audio2motion:{e}")
 
             # We don't have anything else to do
             if is_end:
@@ -758,7 +757,13 @@ class StreamSDK:
 
         # Wait for all threads to finish
         for thread in self.thread_list:
-            thread.join()
+            thread.join(timeout=1.0)
+
+            if thread.is_alive():
+                logger.warning(f"THREAD {thread.name} didn't join")
+                thread._stop()
+            else:    
+                logger.info(f"FINISHED THREAD {thread.name}")
 
         # Check if any worker encountered an exception
         if self.worker_exception is not None:
