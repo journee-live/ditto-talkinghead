@@ -113,14 +113,10 @@ class StreamSDK:
 
     def _start_threads(self):
         """Initialize and start all worker threads for the pipeline"""
-        logger.info("STARTING THREADS")
         self.close()
-        logger.info("FINISHED CLOSEING")
         self.stop_event.clear()
-        logger.info("SMTH STOP EVENT CLEARED")
         # Reset all parameters and queues
         self.reset()
-        logger.info("finished resetting")
 
         # Clear the thread list
         self.thread_list = []
@@ -764,28 +760,22 @@ class StreamSDK:
 
     def close(self):
         # flush frames
-        logger.info("START CLOSE")
         self.stop_event.set()
         #self.reset()
-        logger.info("STOP EVENT SET")
 
         # Wait for all threads to finish
         for thread in self.thread_list:
-            logger.info(f"THREAD {thread.name}")
             thread.join(timeout=4.0)
 
-            # if thread.is_alive():
-            #     logger.warning(f"THREAD {thread.name} didn't join")
-            #     thread._stop()
-            # else:    
-            #     logger.info(f"FINISHED THREAD {thread.name}")
+            if thread.is_alive():
+                logger.warning(f"THREAD {thread.name} didn't join")
+                thread._stop()
+            else:    
+                logger.info(f"FINISHED THREAD {thread.name}")
 
-        logger.info("FINISHED JOINING THREADS")
         # Check if any worker encountered an exception
         if self.worker_exception is not None:
             raise self.worker_exception
-
-        logger.info("SMTH ABOUT WORKER_EXCEPTION")
 
     def reset(self):
         logger.info("reset")
