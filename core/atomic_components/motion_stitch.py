@@ -2,9 +2,28 @@ import copy
 import random
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict
 from scipy.special import softmax
 
 from ..models.stitch_network import StitchNetwork
+
+
+class LipValues(BaseModel):
+    """
+    Lightweight container for debugging lip expressions.
+
+    Uses arbitrary_types_allowed to accept numpy arrays without schema coercion.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    exp: np.ndarray
+    exp_dst: np.ndarray
+    blended: np.ndarray
+    baseline: np.ndarray
+    lips_scaled: np.ndarray
+    final_values: np.ndarray
+
 
 """
 # __init__
@@ -33,15 +52,31 @@ def ctrl_motion(x_d_info, **kwargs):
             x_d_info[k] = bin66_to_degree(x_d_info[k]) + kwargs[kk]
 
     # pose * alpha
-    for kk in ["alpha_pitch", "alpha_yaw", "alpha_roll", "alpha_exp"]:
+    for kk in ["alpha_pitch", "alpha_yaw", "alpha_roll"]:
         if kk in kwargs:
             k = kk[6:]
             x_d_info[k] = x_d_info[k] * kwargs[kk]
 
-    # exp + offset
+    # exp * alpha applied only to non-lip channels
+    if "alpha_exp" in kwargs:
+        exp = x_d_info["exp"]
+        alpha = kwargs["alpha_exp"]
+        _lip = [6, 12, 14, 17, 19, 20]
+        mask = np.ones((21, 3), dtype=np.float32)
+        mask[_lip] = 0.0  # 1 for non-lip, 0 for lip
+        mask = mask.reshape(1, -1)
+        # keep lips unchanged, scale non-lip channels by alpha
+        x_d_info["exp"] = exp * (1 - mask) + (exp * alpha) * mask
+
+    # exp + offset applied only to non-lip channels
     if "delta_exp" in kwargs:
-        k = "exp"
-        x_d_info[k] = x_d_info[k] + kwargs["delta_exp"]
+        exp = x_d_info["exp"]
+        delta = kwargs["delta_exp"]
+        _lip = [6, 12, 14, 17, 19, 20]
+        mask = np.ones((21, 3), dtype=np.float32)
+        mask[_lip] = 0.0  # 1 for non-lip, 0 for lip
+        mask = mask.reshape(1, -1)
+        x_d_info["exp"] = exp + delta * mask
 
     return x_d_info
 
@@ -56,15 +91,31 @@ def fade(x_d_info, dst, alpha, keys=None):
     return x_d_info
 
 
-def ctrl_vad(x_d_info, dst, alpha):
-    exp = x_d_info["exp"]
-    exp_dst = dst["exp"]
+class LipValues:
+    def __init__(self, exp, exp_dst, blended, baseline, lips_scaled, final_values):
+        self.exp = exp
+        self.exp_dst = exp_dst
+        self.blended = blended
+        self.baseline = baseline
+        self.lips_scaled = lips_scaled
+        self.final_values = final_values
+
+
+def ctrl_vad(x_d_info, dst, vad_alpha=1.0):
+    exp = x_d_info["exp"]  # current desired expression (raw opening)
+    exp_dst = dst["exp"]  # source! should be almost 0
 
     _lip = [6, 12, 14, 17, 19, 20]
-    _a1 = np.zeros((21, 3), dtype=np.float32)
-    _a1[_lip] = alpha
-    _a1 = _a1.reshape(1, -1)
-    x_d_info["exp"] = exp * alpha + exp_dst * (1 - alpha)
+    lip_flat_idxs = []
+    for r in _lip:
+        base = r * 3
+        lip_flat_idxs.extend([base + 0, base + 1, base + 2])
+
+    exp[:, lip_flat_idxs] = exp[:, lip_flat_idxs] * vad_alpha + exp_dst[
+        :, lip_flat_idxs
+    ] * (1 - vad_alpha)
+
+    x_d_info["exp"] = exp
 
     return x_d_info
 
@@ -206,9 +257,7 @@ def _fix_gaze(pose_s, x_d_info):
 
 
 def get_rotation_matrix(pitch_, yaw_, roll_):
-    """
-    The input is in degree
-    """
+    """The input is in degree"""
     # transform to radian
     pitch = pitch_ / 180 * np.pi
     yaw = yaw_ / 180 * np.pi
@@ -438,7 +487,11 @@ class MotionStitch:
         )
 
         delta_eye = 0
-        if self.drive_eye and self.delta_eye_arr is not None:
+        if (
+            self.drive_eye
+            and self.delta_eye_arr is not None
+            and len(self.delta_eye_idx_list) > 0
+        ):
             delta_eye = self.delta_eye_arr[
                 self.delta_eye_idx_list[self.idx % len(self.delta_eye_idx_list)]
             ][None]
@@ -451,13 +504,12 @@ class MotionStitch:
             self.fix_exp_a3,
         )
 
-        vad_alpha = kwargs.get("vad_alpha", 1) * self.mouth_opening_scale
-        if vad_alpha < 1:
-            x_d_info = ctrl_vad(
-                x_d_info,
-                x_s_info,
-                vad_alpha,
-            )
+        # Lips: responsiveness and gain replace vad_alpha
+        vad_alpha = kwargs.get("vad_alpha", 1.0) * self.mouth_opening_scale
+
+        # Compute alpha for ctrl_vad: alpha = 1 - responsiveness, clamp to [0,1]
+        if vad_alpha != 1.0:
+            x_d_info = ctrl_vad(x_d_info, x_s_info, vad_alpha=vad_alpha)
 
         x_d_info = ctrl_motion(x_d_info, **kwargs)
 

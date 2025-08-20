@@ -164,7 +164,6 @@ class Audio2Motion:
             - 0: Always update condition from the previous frame (continuous motion)
             - >0: Periodically reset to source condition every fix_kp_cond clips
                  This creates more varied motion by preventing drift over time
-
         """
         if self.fix_kp_cond == 0:  # No reset, continuous update mode
             # Take the previous frame as the new condition
@@ -188,7 +187,8 @@ class Audio2Motion:
                 self.kp_cond = res_kp_seq[:, idx - 1]
 
     def _smo(self, res_kp_seq, s, e):
-        smo = int(self.smo_k_d * self.filter_amount * 10)
+        # Define which parameters correspond to facial expressions that should NOT be smoothed
+        smo = int(self.smo_k_d * self.filter_amount * 30)
         if smo > 1:
             new_res_kp_seq = res_kp_seq.copy()
             n = res_kp_seq.shape[1]
@@ -200,16 +200,6 @@ class Audio2Motion:
                 ee = min(n, i + half_k + 1)
                 res_kp_seq[:, i, :202] = np.mean(new_res_kp_seq[:, ss:ee, :202], axis=1)
 
-        # Define which parameters correspond to facial expressions that should NOT be smoothed
-        # Based on motion_stitch.py, these are the indices for eyes and lips
-        eye_indices = [11, 13, 15, 16, 18]
-        lip_indices = [6, 12, 14, 17, 19, 20]
-
-        # Combine all expression indices that should not be smoothed
-        expression_indices = eye_indices + lip_indices
-
-        # Apply additional low-pass filtering to further reduce high frequencies
-        # This is a simple exponential moving average        
         return res_kp_seq
 
     # @profile("Audio2Motion Forward")
@@ -217,6 +207,7 @@ class Audio2Motion:
         """
         aud_cond: (1, seq_frames, dim)
         """
+
         pred_kp_seq = self.lmdm(self.kp_cond, aud_cond, self.sampling_timesteps)
         if res_kp_seq is None:
             res_kp_seq = pred_kp_seq  # [1, seq_frames, dim]
@@ -268,9 +259,7 @@ class Audio2Motion:
 
         x_d_info_list = []
         for i in range(tmp_res_kp_seq.shape[0]):
-            x_d_info = _cvt_LP_motion_info(
-                tmp_res_kp_seq[i], "arr2dic"
-            )  # {k: (1, dim)}
+            x_d_info = _cvt_LP_motion_info(tmp_res_kp_seq[i], "arr2dic")  # {k: (1, dim)}
             x_d_info_list.append(x_d_info)
         return x_d_info_list
 

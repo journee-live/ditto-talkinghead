@@ -205,6 +205,9 @@ class StreamSDK:
                 ctrl_info[i] = item
 
         self.ctrl_info = ctrl_info
+        vad_alpha = ctrl_info.get("vad_alpha", 1.0)
+        self.overall_ctrl_info["vad_alpha"] = vad_alpha
+        self.motion_stitch.overall_ctrl_info["vad_alpha"] = vad_alpha
 
     def setup(self, source_path, source_info=None, **kwargs):
         # ======== Prepare Options ========
@@ -212,6 +215,12 @@ class StreamSDK:
         print("=" * 20, "setup kwargs", "=" * 20)
         print_cfg(**kwargs)
         print("=" * 50)
+
+        is_mirror_loop = kwargs.get("is_mirror_loop", True)
+
+        self.mirror_period = 2
+        if not is_mirror_loop:
+            self.mirror_period = 1
 
         # -- avatar_registrar: template cfg --
         self.max_size = kwargs.get("max_size", 1920)
@@ -582,7 +591,12 @@ class StreamSDK:
         all_audio_processed = True
         audio_feat = self.initial_audio_feat
         local_idx = 0
+        global_idx = 0
+        cond_idx_start = 0 - len(audio_feat)
+        gen_frame_idx = 0
         started_processing = False
+        res_kp_seq = None
+        res_kp_seq_valid_start = None
         item_buffer = np.zeros((0, aud_feat_dim), dtype=np.float32)
         while not self.stop_event.is_set():
             if all_audio_processed:
@@ -709,7 +723,7 @@ class StreamSDK:
                             return
 
                         frame_idx = _mirror_index(
-                            gen_frame_idx, self.source_info_frames
+                            gen_frame_idx, self.source_info_frames, self.mirror_period
                         )
                         ctrl_kwargs = self._get_ctrl_info(gen_frame_idx)
 
@@ -753,7 +767,7 @@ class StreamSDK:
     def close(self):
         # flush frames
         self.stop_event.set()
-        #self.reset()
+        # self.reset()
 
         # Wait for all threads to finish
         for thread in self.thread_list:
