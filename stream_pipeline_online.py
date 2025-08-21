@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 from loguru import logger
 from pydantic import BaseModel
+from pydantic.fields import Field
 
 from .core.atomic_components.audio2motion import Audio2Motion
 from .core.atomic_components.avatar_registrar import (
@@ -43,6 +44,40 @@ wav2feat_cfg:
     w2f_cfg, 
     w2f_type
 """
+
+
+class DittoInteractionParams(BaseModel):
+    """
+    User-tunable parameters that influence online inference behavior.
+
+    Attributes:
+        start_frame_idx: Starting index for generated frames. Useful to offset
+            the output timeline when stitching multiple segments. Default: 0.
+        filter_amount: Controls temporal filtering strength applied in the
+            audio-to-motion stage. Higher values yield stronger smoothing.
+            Default: 1000.0.
+        mouth_opening_scale: Multiplier applied to the mouth opening amplitude
+            during motion stitching. Values > 1.0 exaggerate mouth motion;
+            values < 1.0 reduce it. Default: 1.0.
+
+    """
+
+    start_frame_idx: int = Field(
+        default=0,
+        description=(
+            "Starting index for generated frames; offsets the output timeline."
+        ),
+    )
+    filter_amount: float = Field(
+        default=1000.0,
+        description=(
+            "Temporal filtering strength for audio-to-motion; higher = smoother."
+        ),
+    )
+    mouth_opening_scale: float = Field(
+        default=1.0,
+        description=("Multiplier for mouth opening amplitude during motion stitching."),
+    )
 
 
 class SDKDebugState(BaseModel):
@@ -637,7 +672,6 @@ class StreamSDK:
                         logger.info("Starting processing audio2motion")
                         started_processing = True
 
-
             except queue.Empty:
                 # logger.info(f"Audio2Motion queue is empty, is_end={is_end}")
                 continue
@@ -776,7 +810,7 @@ class StreamSDK:
             if thread.is_alive():
                 logger.warning(f"THREAD {thread.name} didn't join")
                 thread._stop()
-            else:    
+            else:
                 logger.info(f"FINISHED THREAD {thread.name}")
 
         # Check if any worker encountered an exception
@@ -808,14 +842,12 @@ class StreamSDK:
 
     def start_processing_audio(
         self,
-        start_frame_idx: int = 0,
-        filter_amount: float = 0.0,
-        mouth_opening_scale: float = 1.0,
+        interaction_params: DittoInteractionParams,
     ):
-        logger.info("start_processing_audio")
-        self.starting_gen_frame_idx = start_frame_idx
-        self.audio2motion.filter_amount = filter_amount
-        self.motion_stitch.mouth_opening_scale = mouth_opening_scale
+        logger.info(f"start_processing_audio {interaction_params.model_dump()}")
+        self.starting_gen_frame_idx = interaction_params.start_frame_idx
+        self.audio2motion.filter_amount = interaction_params.filter_amount
+        self.motion_stitch.mouth_opening_scale = interaction_params.mouth_opening_scale
         self.start_processing_time = time.monotonic()
         self.is_expecting_more_audio.set()
 
