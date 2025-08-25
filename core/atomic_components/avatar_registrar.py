@@ -2,7 +2,7 @@ import numpy as np
 
 from .loader import load_source_frames
 from .source2info import Source2Info
-
+from ..utils.exceptions import UnsupportedSourceException
 
 def _mean_filter(arr, k):
     n = arr.shape[0]
@@ -72,7 +72,11 @@ class AvatarRegistrar:
             crop_vy_ratio: -0.125
             crop_flag_do_rot: True
         """
-        rgb_list, is_image_flag = load_source_frames(source_path, max_dim=max_dim, n_frames=n_frames)
+        try:
+            rgb_list, is_image_flag = load_source_frames(source_path, max_dim=max_dim, n_frames=n_frames)
+        except UnsupportedSourceException as e:
+            raise e
+
         source_info = {
             "x_s_info_lst": [],
             "f_s_lst": [],

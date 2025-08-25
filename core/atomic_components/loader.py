@@ -1,6 +1,7 @@
 import filetype
 import imageio
 import cv2
+from ..utils.exceptions import UnsupportedSourceException
 
 
 def is_image(file_path):
@@ -79,7 +80,7 @@ def load_source_frames(source_path, max_dim=-1, n_frames=-1):
         rgb_list = load_video(source_path, n_frames, max_dim)
         is_image_flag = False
     else:
-        raise ValueError(f"Unsupported source type: {source_path}")
+        raise UnsupportedSourceException(source=source_path)
     return rgb_list, is_image_flag
 
 

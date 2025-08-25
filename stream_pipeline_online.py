@@ -23,6 +23,7 @@ from .core.atomic_components.warp_f3d import WarpF3D
 from .core.atomic_components.wav2feat import Wav2Feat
 from .core.utils.profiling_utils import FPSTracker
 from .core.utils.threading_utils import AtomicCounter
+from .core.utils.exceptions import UnsupportedSourceException
 
 """
 avatar_registrar_cfg:
@@ -324,12 +325,15 @@ class StreamSDK:
         }
         n_frames = self.template_n_frames if self.template_n_frames > 0 else self.N_d
         if source_info is None:
-            source_info = self.avatar_registrar(
-                source_path,
-                max_dim=self.max_size,
-                n_frames=n_frames,
-                **crop_kwargs,
-            )
+            try:
+                source_info = self.avatar_registrar(
+                    source_path,
+                    max_dim=self.max_size,
+                    n_frames=n_frames,
+                    **crop_kwargs,
+                )
+            except UnsupportedSourceException as e:
+                raise e
 
         if len(source_info["x_s_info_lst"]) > 1 and self.smo_k_s > 1:
             source_info["x_s_info_lst"] = smooth_x_s_info_lst(
