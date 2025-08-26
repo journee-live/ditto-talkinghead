@@ -72,10 +72,8 @@ class AvatarRegistrar:
             crop_vy_ratio: -0.125
             crop_flag_do_rot: True
         """
-        try:
-            rgb_list, is_image_flag = load_source_frames(source_path, max_dim=max_dim, n_frames=n_frames)
-        except UnsupportedSourceException as e:
-            raise e
+        rgb_list, is_image_flag = load_source_frames(source_path, max_dim=max_dim, n_frames=n_frames)
+        
 
         source_info = {
             "x_s_info_lst": [],
