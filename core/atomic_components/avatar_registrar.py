@@ -2,7 +2,7 @@ import numpy as np
 
 from .loader import load_source_frames
 from .source2info import Source2Info
-
+from ..utils.exceptions import UnsupportedSourceException
 
 def _mean_filter(arr, k):
     n = arr.shape[0]
