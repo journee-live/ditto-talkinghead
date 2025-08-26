@@ -23,7 +23,6 @@ from .core.atomic_components.warp_f3d import WarpF3D
 from .core.atomic_components.wav2feat import Wav2Feat
 from .core.utils.profiling_utils import FPSTracker
 from .core.utils.threading_utils import AtomicCounter
-from .core.utils.exceptions import UnsupportedSourceException
 
 """
 avatar_registrar_cfg:
