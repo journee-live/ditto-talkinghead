@@ -38,14 +38,13 @@ class ConditionHandler:
         use_eye_open=True,
         use_eye_ball=True,
         seq_frames=80,
-        mirror_period=2,
     ):
         self.use_emo = use_emo
         self.use_sc = use_sc
         self.use_eye_open = use_eye_open
         self.use_eye_ball = use_eye_ball
-        self.mirror_period = mirror_period
         self.seq_frames = seq_frames
+        self.mirror_period = 2
 
     def setup(self, setup_info, emo, eye_f0_mode=False, ch_info=None):
         """

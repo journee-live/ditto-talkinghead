@@ -257,6 +257,7 @@ class StreamSDK:
         if not is_mirror_loop:
             self.mirror_period = 1
 
+        self.condition_handler.mirror_period = self.mirror_period
         # -- avatar_registrar: template cfg --
         self.max_size = kwargs.get("max_size", 1920)
         self.template_n_frames = kwargs.get("template_n_frames", -1)
