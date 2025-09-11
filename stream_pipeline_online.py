@@ -2,8 +2,8 @@ import queue
 import threading
 import time
 import traceback
+from typing import Any, Dict, List
 
-import cv2
 import numpy as np
 from loguru import logger
 from pydantic import BaseModel
@@ -126,7 +126,6 @@ class StreamSDK:
         self.wav2feat = Wav2Feat(**wav2feat_cfg)
         self.starting_gen_frame_idx = 0
         self.motion_output_enabled = False
-        self.idle_to_speech_transition = None
         self.fps_tracker = FPSTracker("streamSDK")
         self.start_processing_time = 0
 
@@ -432,10 +431,7 @@ class StreamSDK:
             res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
             self.pending_frames.decrement(1)
 
-            frame_bgr = cv2.cvtColor(res_frame_rgb, cv2.COLOR_RGB2BGR)
-
             # Encode frame to JPEG
-            success, frame_data = cv2.imencode(".jpg", frame_bgr)
 
             if not self.fps_tracker.is_running:
                 self.fps_tracker.start()
@@ -450,7 +446,7 @@ class StreamSDK:
             if gen_frame_idx % 25 == 0:
                 self.fps_tracker.log()
 
-            self.frame_queue.put([frame_data.tobytes(), frame_idx, gen_frame_idx])
+            self.frame_queue.put([res_frame_rgb, frame_idx, gen_frame_idx])
             self.putback_queue.task_done()
 
     def decode_f3d_worker(self):
@@ -929,3 +925,40 @@ class StreamSDK:
             and is_last_frame_in_queue
             and is_not_expecting_more_audio
         )
+
+    def setup_frame_transition(
+        self,
+        start_gen_frame_idx: int,
+        motion_data: dict[str, np.ndarray]|None,
+        fade_in: int,
+        fade_out: int,
+        ctrl_info: Dict[str, Any]
+    ):
+        logger.info(f"Setting up frame transition to frame: {start_gen_frame_idx}")
+        self.reset()
+        frame_idx = _mirror_index(
+            start_gen_frame_idx, self.source_info_frames, self.mirror_period
+        )
+        self.setup_Nd(
+            fade_in,
+            fade_in=fade_in,
+            fade_out=fade_out,
+            ctrl_info=ctrl_info,
+            fade_in_frame_offset=frame_idx,
+            fade_out_frame_offset=0,
+        )
+
+        ctrl_kwargs = self._get_ctrl_info(frame_idx)
+        self.motion_stitch_queue.put(
+            [
+                frame_idx,
+                motion_data,
+                ctrl_kwargs,
+                frame_idx,
+            ],
+            timeout=0.1,
+        )
+        self.starting_gen_frame_idx = frame_idx
+        self.pending_frames.set(1)
+        self.expected_frames.set(1)
+        self.reset_audio_features()
