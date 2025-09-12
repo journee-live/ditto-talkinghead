@@ -4,6 +4,9 @@ import time
 import traceback
 from typing import Any, Dict, List
 
+import io
+from PIL import Image
+
 import numpy as np
 from loguru import logger
 from pydantic import BaseModel
@@ -432,6 +435,13 @@ class StreamSDK:
             self.pending_frames.decrement(1)
 
             # Encode frame to JPEG
+            # Create a PIL Image
+            img = Image.fromarray(res_frame_rgb, "RGB")
+
+            # Save to memory buffer as JPEG
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG")
+            frame_data = buf.getvalue()
 
             if not self.fps_tracker.is_running:
                 self.fps_tracker.start()
@@ -446,7 +456,7 @@ class StreamSDK:
             if gen_frame_idx % 25 == 0:
                 self.fps_tracker.log()
 
-            self.frame_queue.put([res_frame_rgb, frame_idx, gen_frame_idx])
+            self.frame_queue.put([frame_data, frame_idx, gen_frame_idx])
             self.putback_queue.task_done()
 
     def decode_f3d_worker(self):
