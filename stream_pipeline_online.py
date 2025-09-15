@@ -81,6 +81,18 @@ class DittoInteractionParams(BaseModel):
         default=1.0,
         description=("Multiplier for mouth opening amplitude during motion stitching."),
     )
+    source_keyframes_index: int = Field(
+        default=0,
+        description=(
+            "Index of the keyframes slot to use as source for blending."
+        )
+    )
+    destination_keyframes_index: int = Field(
+        default=-1,
+        description=(
+            "Index of the keyframes slot to update with the generated frames, set to -1 to not update keyframes."
+        )
+    )
 
 
 class SDKDebugState(BaseModel):
@@ -965,6 +977,9 @@ class StreamSDK:
             mouth_opening_scale=mouth_opening_scale
         )
 
+        self.starting_gen_frame_idx = start_gen_frame_idx
+        self.reset_audio_features()
+
         if motion_data is not None:
             ctrl_kwargs = self._get_ctrl_info(frame_idx)
             self.motion_stitch_queue.put(
@@ -979,5 +994,3 @@ class StreamSDK:
             self.pending_frames.set(1)
             self.expected_frames.set(1)
 
-        self.starting_gen_frame_idx = start_gen_frame_idx
-        self.reset_audio_features()
