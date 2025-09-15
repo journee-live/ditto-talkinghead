@@ -200,8 +200,10 @@ class StreamSDK:
         fade_in=-1,
         fade_out=-1,
         ctrl_info=None,
+        filter_amount=0.1,
         fade_in_frame_offset=0,
         fade_out_frame_offset=0,
+        mouth_opening_scale=1.0
     ):
         # for eye open at video end
         self.motion_stitch.set_Nd(N_d)
@@ -245,6 +247,8 @@ class StreamSDK:
         vad_alpha = ctrl_info.get("vad_alpha", 1.0)
         self.overall_ctrl_info["vad_alpha"] = vad_alpha
         self.motion_stitch.overall_ctrl_info["vad_alpha"] = vad_alpha
+        self.motion_stitch.mouth_opening_scale = mouth_opening_scale
+        self.audio2motion.filter_amount = filter_amount
 
     def setup(self, source_path, source_info=None, **kwargs):
         # ======== Prepare Options ========
@@ -851,9 +855,9 @@ class StreamSDK:
         interaction_params: DittoInteractionParams,
     ):
         logger.info(f"start_processing_audio {interaction_params.model_dump()}")
-        self.starting_gen_frame_idx = interaction_params.start_frame_idx
-        self.audio2motion.filter_amount = interaction_params.filter_amount
-        self.motion_stitch.mouth_opening_scale = interaction_params.mouth_opening_scale
+        #self.starting_gen_frame_idx = interaction_params.start_frame_idx
+        #self.audio2motion.filter_amount = interaction_params.filter_amount
+        #self.motion_stitch.mouth_opening_scale = interaction_params.mouth_opening_scale
         self.start_processing_time = time.monotonic()
         self.is_expecting_more_audio.set()
 
@@ -942,13 +946,15 @@ class StreamSDK:
         motion_data: dict[str, np.ndarray]|None,
         fade_in: int,
         fade_out: int,
-        ctrl_info: Dict[str, Any]
+        ctrl_info: Dict[str, Any],
+        mouth_opening_scale: float,
     ):
-        logger.info(f"Setting up frame transition to frame: {start_gen_frame_idx}")
         self.reset()
         frame_idx = _mirror_index(
             start_gen_frame_idx, self.source_info_frames, self.mirror_period
         )
+        logger.info(f"Setting up frame transition to frame: {start_gen_frame_idx} with frame_idx: {frame_idx} and source_info_frames: {self.source_info_frames}")
+
         self.setup_Nd(
             fade_in,
             fade_in=fade_in,
@@ -956,19 +962,22 @@ class StreamSDK:
             ctrl_info=ctrl_info,
             fade_in_frame_offset=frame_idx,
             fade_out_frame_offset=0,
+            mouth_opening_scale=mouth_opening_scale
         )
 
-        ctrl_kwargs = self._get_ctrl_info(frame_idx)
-        self.motion_stitch_queue.put(
-            [
-                frame_idx,
-                motion_data,
-                ctrl_kwargs,
-                frame_idx,
-            ],
-            timeout=0.1,
-        )
-        self.starting_gen_frame_idx = frame_idx
-        self.pending_frames.set(1)
-        self.expected_frames.set(1)
+        if motion_data is not None:
+            ctrl_kwargs = self._get_ctrl_info(frame_idx)
+            self.motion_stitch_queue.put(
+                [
+                    frame_idx,
+                    motion_data,
+                    ctrl_kwargs,
+                    start_gen_frame_idx,
+                ],
+                timeout=0.1,
+            )
+            self.pending_frames.set(1)
+            self.expected_frames.set(1)
+
+        self.starting_gen_frame_idx = start_gen_frame_idx
         self.reset_audio_features()
