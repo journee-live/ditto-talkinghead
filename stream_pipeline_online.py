@@ -960,6 +960,7 @@ class StreamSDK:
         fade_out: int,
         ctrl_info: Dict[str, Any],
         mouth_opening_scale: float,
+        filter_amount: float,
     ):
         self.reset()
         frame_idx = _mirror_index(
@@ -974,10 +975,11 @@ class StreamSDK:
             ctrl_info=ctrl_info,
             fade_in_frame_offset=frame_idx,
             fade_out_frame_offset=0,
-            mouth_opening_scale=mouth_opening_scale
+            mouth_opening_scale=mouth_opening_scale,
+            filter_amount=filter_amount,
         )
 
-        self.starting_gen_frame_idx = start_gen_frame_idx
+        self.starting_gen_frame_idx = frame_idx
         self.reset_audio_features()
 
         if motion_data is not None:
@@ -987,10 +989,9 @@ class StreamSDK:
                     frame_idx,
                     motion_data,
                     ctrl_kwargs,
-                    start_gen_frame_idx,
+                    frame_idx,
                 ],
                 timeout=0.1,
             )
             self.pending_frames.set(1)
             self.expected_frames.set(1)
-
