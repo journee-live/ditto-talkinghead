@@ -10,7 +10,6 @@ from PIL import Image
 import numpy as np
 from loguru import logger
 from pydantic import BaseModel
-from pydantic.fields import Field
 
 from .core.atomic_components.audio2motion import Audio2Motion
 from .core.atomic_components.avatar_registrar import (
@@ -48,51 +47,6 @@ wav2feat_cfg:
     w2f_type
 """
 
-
-class DittoInteractionParams(BaseModel):
-    """
-    User-tunable parameters that influence online inference behavior.
-
-    Attributes:
-        start_frame_idx: Starting index for generated frames. Useful to offset
-            the output timeline when stitching multiple segments. Default: 0.
-        filter_amount: Controls temporal filtering strength applied in the
-            audio-to-motion stage. Higher values yield stronger smoothing.
-            Default: 1000.0.
-        mouth_opening_scale: Multiplier applied to the mouth opening amplitude
-            during motion stitching. Values > 1.0 exaggerate mouth motion;
-            values < 1.0 reduce it. Default: 1.0.
-
-    """
-
-    start_frame_idx: int = Field(
-        default=0,
-        description=(
-            "Starting index for generated frames; offsets the output timeline."
-        ),
-    )
-    filter_amount: float = Field(
-        default=1000.0,
-        description=(
-            "Temporal filtering strength for audio-to-motion; higher = smoother."
-        ),
-    )
-    mouth_opening_scale: float = Field(
-        default=1.0,
-        description=("Multiplier for mouth opening amplitude during motion stitching."),
-    )
-    source_keyframes_index: int = Field(
-        default=0,
-        description=(
-            "Index of the keyframes slot to use as source for blending."
-        )
-    )
-    destination_keyframes_index: int = Field(
-        default=-1,
-        description=(
-            "Index of the keyframes slot to update with the generated frames, set to -1 to not update keyframes."
-        )
-    )
 
 
 class SDKDebugState(BaseModel):
@@ -863,10 +817,9 @@ class StreamSDK:
         self.reset_audio2motion_needed.set()
 
     def start_processing_audio(
-        self,
-        interaction_params: DittoInteractionParams,
+        self
     ):
-        logger.info(f"start_processing_audio {interaction_params.model_dump()}")
+        logger.info(f"start_processing_audio")
         #self.starting_gen_frame_idx = interaction_params.start_frame_idx
         #self.audio2motion.filter_amount = interaction_params.filter_amount
         #self.motion_stitch.mouth_opening_scale = interaction_params.mouth_opening_scale
