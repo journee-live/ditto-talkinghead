@@ -934,6 +934,7 @@ class StreamSDK:
 
         self.starting_gen_frame_idx = frame_idx
         self.reset_audio_features()
+        self.start_processing_audio()
 
         if motion_data is not None:
             ctrl_kwargs = self._get_ctrl_info(frame_idx)
