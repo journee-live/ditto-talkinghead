@@ -2,12 +2,14 @@ import queue
 import threading
 import time
 import traceback
+from typing import Any, Dict, List
 
-import cv2
+import io
+from PIL import Image
+
 import numpy as np
 from loguru import logger
 from pydantic import BaseModel
-from pydantic.fields import Field
 
 from .core.atomic_components.audio2motion import Audio2Motion
 from .core.atomic_components.avatar_registrar import (
@@ -45,39 +47,6 @@ wav2feat_cfg:
     w2f_type
 """
 
-
-class DittoInteractionParams(BaseModel):
-    """
-    User-tunable parameters that influence online inference behavior.
-
-    Attributes:
-        start_frame_idx: Starting index for generated frames. Useful to offset
-            the output timeline when stitching multiple segments. Default: 0.
-        filter_amount: Controls temporal filtering strength applied in the
-            audio-to-motion stage. Higher values yield stronger smoothing.
-            Default: 1000.0.
-        mouth_opening_scale: Multiplier applied to the mouth opening amplitude
-            during motion stitching. Values > 1.0 exaggerate mouth motion;
-            values < 1.0 reduce it. Default: 1.0.
-
-    """
-
-    start_frame_idx: int = Field(
-        default=0,
-        description=(
-            "Starting index for generated frames; offsets the output timeline."
-        ),
-    )
-    filter_amount: float = Field(
-        default=1000.0,
-        description=(
-            "Temporal filtering strength for audio-to-motion; higher = smoother."
-        ),
-    )
-    mouth_opening_scale: float = Field(
-        default=1.0,
-        description=("Multiplier for mouth opening amplitude during motion stitching."),
-    )
 
 
 class SDKDebugState(BaseModel):
@@ -126,7 +95,6 @@ class StreamSDK:
         self.wav2feat = Wav2Feat(**wav2feat_cfg)
         self.starting_gen_frame_idx = 0
         self.motion_output_enabled = False
-        self.idle_to_speech_transition = None
         self.fps_tracker = FPSTracker("streamSDK")
         self.start_processing_time = 0
 
@@ -198,8 +166,10 @@ class StreamSDK:
         fade_in=-1,
         fade_out=-1,
         ctrl_info=None,
+        filter_amount=0.1,
         fade_in_frame_offset=0,
         fade_out_frame_offset=0,
+        mouth_opening_scale=1.0
     ):
         # for eye open at video end
         self.motion_stitch.set_Nd(N_d)
@@ -243,6 +213,8 @@ class StreamSDK:
         vad_alpha = ctrl_info.get("vad_alpha", 1.0)
         self.overall_ctrl_info["vad_alpha"] = vad_alpha
         self.motion_stitch.overall_ctrl_info["vad_alpha"] = vad_alpha
+        self.motion_stitch.mouth_opening_scale = mouth_opening_scale
+        self.audio2motion.filter_amount = filter_amount
 
     def setup(self, source_path, source_info=None, **kwargs):
         # ======== Prepare Options ========
@@ -432,10 +404,14 @@ class StreamSDK:
             res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
             self.pending_frames.decrement(1)
 
-            frame_bgr = cv2.cvtColor(res_frame_rgb, cv2.COLOR_RGB2BGR)
-
             # Encode frame to JPEG
-            success, frame_data = cv2.imencode(".jpg", frame_bgr)
+            # Create a PIL Image
+            img = Image.fromarray(res_frame_rgb, "RGB")
+
+            # Save to memory buffer as JPEG
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG")
+            frame_data = buf.getvalue()
 
             if not self.fps_tracker.is_running:
                 self.fps_tracker.start()
@@ -450,7 +426,7 @@ class StreamSDK:
             if gen_frame_idx % 25 == 0:
                 self.fps_tracker.log()
 
-            self.frame_queue.put([frame_data.tobytes(), frame_idx, gen_frame_idx])
+            self.frame_queue.put([frame_data, frame_idx, gen_frame_idx])
             self.putback_queue.task_done()
 
     def decode_f3d_worker(self):
@@ -841,13 +817,12 @@ class StreamSDK:
         self.reset_audio2motion_needed.set()
 
     def start_processing_audio(
-        self,
-        interaction_params: DittoInteractionParams,
+        self
     ):
-        logger.info(f"start_processing_audio {interaction_params.model_dump()}")
-        self.starting_gen_frame_idx = interaction_params.start_frame_idx
-        self.audio2motion.filter_amount = interaction_params.filter_amount
-        self.motion_stitch.mouth_opening_scale = interaction_params.mouth_opening_scale
+        logger.info(f"start_processing_audio")
+        #self.starting_gen_frame_idx = interaction_params.start_frame_idx
+        #self.audio2motion.filter_amount = interaction_params.filter_amount
+        #self.motion_stitch.mouth_opening_scale = interaction_params.mouth_opening_scale
         self.start_processing_time = time.monotonic()
         self.is_expecting_more_audio.set()
 
@@ -929,3 +904,48 @@ class StreamSDK:
             and is_last_frame_in_queue
             and is_not_expecting_more_audio
         )
+
+    def setup_frame_transition(
+        self,
+        start_gen_frame_idx: int,
+        motion_data: dict[str, np.ndarray]|None,
+        fade_in: int,
+        fade_out: int,
+        ctrl_info: Dict[str, Any],
+        mouth_opening_scale: float,
+        filter_amount: float,
+    ):
+        self.reset()
+        frame_idx = _mirror_index(
+            start_gen_frame_idx, self.source_info_frames, self.mirror_period
+        )
+        logger.info(f"Setting up frame transition to frame: {start_gen_frame_idx} with frame_idx: {frame_idx} and source_info_frames: {self.source_info_frames}")
+
+        self.setup_Nd(
+            fade_in,
+            fade_in=fade_in,
+            fade_out=fade_out,
+            ctrl_info=ctrl_info,
+            fade_in_frame_offset=frame_idx,
+            fade_out_frame_offset=0,
+            mouth_opening_scale=mouth_opening_scale,
+            filter_amount=filter_amount,
+        )
+
+        self.starting_gen_frame_idx = frame_idx
+        self.reset_audio_features()
+        self.start_processing_audio()
+
+        if motion_data is not None:
+            ctrl_kwargs = self._get_ctrl_info(frame_idx)
+            self.motion_stitch_queue.put(
+                [
+                    frame_idx,
+                    motion_data,
+                    ctrl_kwargs,
+                    frame_idx,
+                ],
+                timeout=0.1,
+            )
+            self.pending_frames.set(1)
+            self.expected_frames.set(1)

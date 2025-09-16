@@ -1,3 +1,4 @@
+from typing import Any, Dict, List
 import numpy as np
 
 from .loader import load_source_frames
@@ -58,6 +59,36 @@ class AvatarRegistrar:
             motion_extractor_cfg,
         )
 
+    def setup_source_info(
+        self,
+        rgb_frames: List[np.ndarray],
+        is_image_flag: bool,
+        **kwargs
+    ):
+        source_info: Dict[str, Any] = {
+            "x_s_info_lst": [],
+            "f_s_lst": [],
+            "M_c2o_lst": [],
+            "eye_open_lst": [],
+            "eye_ball_lst": [],
+        }
+
+        keys = ["x_s_info", "f_s", "M_c2o", "eye_open", "eye_ball"]
+        last_lmk = None
+        for rgb in rgb_frames:
+            info = self.source2info(rgb, last_lmk, **kwargs)
+            for k in keys:
+                source_info[f"{k}_lst"].append(info[k])
+
+            last_lmk = info["lmk203"]
+
+        sc_f0 = source_info['x_s_info_lst'][0]['kp'].flatten()
+
+        source_info["sc"] = sc_f0
+        source_info["is_image_flag"] = is_image_flag
+        source_info["img_rgb_lst"] = rgb_frames
+        return source_info
+
     def register(
         self,
         source_path,  # image | video
@@ -73,28 +104,7 @@ class AvatarRegistrar:
             crop_flag_do_rot: True
         """
         rgb_list, is_image_flag = load_source_frames(source_path, max_dim=max_dim, n_frames=n_frames)
-        source_info = {
-            "x_s_info_lst": [],
-            "f_s_lst": [],
-            "M_c2o_lst": [],
-            "eye_open_lst": [],
-            "eye_ball_lst": [],
-        }
-        keys = ["x_s_info", "f_s", "M_c2o", "eye_open", "eye_ball"]
-        last_lmk = None
-        for rgb in rgb_list:
-            info = self.source2info(rgb, last_lmk, **kwargs)
-            for k in keys:
-                source_info[f"{k}_lst"].append(info[k])
-
-            last_lmk = info["lmk203"]
-
-        sc_f0 = source_info['x_s_info_lst'][0]['kp'].flatten()
-
-        source_info["sc"] = sc_f0
-        source_info["is_image_flag"] = is_image_flag
-        source_info["img_rgb_lst"] = rgb_list
-
+        source_info = self.setup_source_info(rgb_list, is_image_flag, **kwargs)
         return source_info
     
     def __call__(self, *args, **kwargs):

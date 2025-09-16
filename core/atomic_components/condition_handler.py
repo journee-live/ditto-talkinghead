@@ -17,13 +17,27 @@ def _get_emo_avg(idx=6):
     return emo_avg
 
 
+# def _mirror_index(index, size, period=2):
+#     turn = index // size
+#     res = index % size
+#     if turn % period == 0:
+#         return res
+#     else:
+#         return size - res - 1
+
 def _mirror_index(index, size, period=2):
-    turn = index // size
-    res = index % size
-    if turn % period == 0:
-        return res
+    # Calculate period length (going up and down)
+    period = (size - 1) * 2
+
+    # Get position within one period
+    normalized_idx = index % period
+
+    # If in first half, return the index directly
+    if normalized_idx < size:
+        return normalized_idx
     else:
-        return size - res - 1
+        # If in second half, return the mirrored index
+        return period - normalized_idx - 1
 
 
 class ConditionHandler:
