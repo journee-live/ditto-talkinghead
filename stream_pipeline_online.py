@@ -398,7 +398,7 @@ class StreamSDK:
                 self.putback_queue.task_done()
                 continue
 
-            frame_idx, render_img, gen_frame_idx = item
+            frame_idx, render_img, gen_frame_idx, start_timestamp = item
             frame_rgb = self.source_info["img_rgb_lst"][frame_idx]
             M_c2o = self.source_info["M_c2o_lst"][frame_idx]
             res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
@@ -426,7 +426,7 @@ class StreamSDK:
             if gen_frame_idx % 25 == 0:
                 self.fps_tracker.log()
 
-            self.frame_queue.put([frame_data, frame_idx, gen_frame_idx])
+            self.frame_queue.put([frame_data, frame_idx, gen_frame_idx, start_timestamp])
             self.putback_queue.task_done()
 
     def decode_f3d_worker(self):
@@ -447,9 +447,9 @@ class StreamSDK:
                 self.decode_f3d_queue.task_done()
                 continue
 
-            frame_idx, f_3d, gen_frame_idx = item
+            frame_idx, f_3d, gen_frame_idx, start_timestamp = item
             render_img = self.decode_f3d(f_3d)
-            self.putback_queue.put([frame_idx, render_img, gen_frame_idx])
+            self.putback_queue.put([frame_idx, render_img, gen_frame_idx, start_timestamp])
             self.decode_f3d_queue.task_done()
 
     def warp_f3d_worker(self):
@@ -471,10 +471,10 @@ class StreamSDK:
                 self.warp_f3d_queue.task_done()
                 continue
 
-            frame_idx, x_s, x_d, gen_frame_idx = item
+            frame_idx, x_s, x_d, gen_frame_idx, start_timestamp = item
             f_s = self.source_info["f_s_lst"][frame_idx]
             f_3d = self.warp_f3d(f_s, x_s, x_d)
-            self.decode_f3d_queue.put([frame_idx, f_3d, gen_frame_idx])
+            self.decode_f3d_queue.put([frame_idx, f_3d, gen_frame_idx, start_timestamp])
             self.warp_f3d_queue.task_done()
 
     def motion_stitch_worker(self):
@@ -498,7 +498,7 @@ class StreamSDK:
                 self.motion_stitch_queue.task_done()
                 continue
 
-            frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx = item
+            frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx, start_timestamp = item
             x_s_info = self.source_info["x_s_info_lst"][frame_idx]
             if (
                 gen_frame_idx
@@ -509,7 +509,7 @@ class StreamSDK:
             num_frames_stitched += 1
             if self.motion_output_enabled:
                 self.motion_stitch_out_queue.put([x_d_info, frame_idx, gen_frame_idx])
-            self.warp_f3d_queue.put([frame_idx, x_s, x_d, gen_frame_idx])
+            self.warp_f3d_queue.put([frame_idx, x_s, x_d, gen_frame_idx, start_timestamp])
             self.motion_stitch_queue.task_done()
 
     def hubert_worker(self):
@@ -545,11 +545,13 @@ class StreamSDK:
             if audio_chunk is None:
                 continue
 
+            start_timestamp = time.perf_counter()
+
             # Process audio through HuBERT
             item = self.wav2feat(audio_chunk, chunksize=self.chunk_size)
 
             # Put the processed features in the queue
-            self.audio2motion_queue.put((item, chunk_idx))
+            self.audio2motion_queue.put((item, chunk_idx, start_timestamp))
             self.hubert_features_queue.task_done()
             chunk_idx += 1
 
@@ -609,6 +611,7 @@ class StreamSDK:
         res_kp_seq = None
         res_kp_seq_valid_start = None
         item_buffer = np.zeros((0, aud_feat_dim), dtype=np.float32)
+        start_timestamp = 0
         while not self.stop_event.is_set():
             if all_audio_processed:
                 self.reset_audio2motion_needed.wait()
@@ -641,7 +644,7 @@ class StreamSDK:
                     and self.audio2motion_queue.qsize() == 0
                 )
                 if not is_end:
-                    item, chunk_idx = self.audio2motion_queue.get(
+                    item, chunk_idx, start_timestamp = self.audio2motion_queue.get(
                         timeout=0.05
                     )  # audio feat
                     if not started_processing:
@@ -742,7 +745,7 @@ class StreamSDK:
                             < self.expected_frames.get() + self.starting_gen_frame_idx
                         ):
                             self.motion_stitch_queue.put(
-                                [frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx],
+                                [frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx, start_timestamp],
                                 timeout=0.1,
                             )
                         else:
@@ -944,6 +947,7 @@ class StreamSDK:
                     motion_data,
                     ctrl_kwargs,
                     frame_idx,
+                    time.perf_counter()
                 ],
                 timeout=0.1,
             )
