@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 import io
 from PIL import Image
+from PIL.Image import Resampling
 
 import numpy as np
 from loguru import logger
@@ -407,6 +408,7 @@ class StreamSDK:
             # Encode frame to JPEG
             # Create a PIL Image
             img = Image.fromarray(res_frame_rgb, "RGB")
+            img = img.resize((1280, 720), Resampling.BILINEAR)
 
             # Save to memory buffer as JPEG
             buf = io.BytesIO()
