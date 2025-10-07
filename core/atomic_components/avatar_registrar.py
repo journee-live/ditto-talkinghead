@@ -61,7 +61,6 @@ class AvatarRegistrar:
             motion_extractor_cfg,
         )
         self.register_finish_event = asyncio.Event()
-        self.source_info = None
 
     def setup_source_info(
         self,
@@ -111,18 +110,7 @@ class AvatarRegistrar:
         source_info = self.setup_source_info(rgb_list, is_image_flag, **kwargs)
         return source_info
 
-    def registrar_threaded(self, *args, **kwargs):
-        self.source_info = self.register(*args, **kwargs)
-        self.register_finish_event.set()
-
     async def __call__(self, *args, **kwargs):
-        thread = threading.Thread(target=self.registrar_threaded, args=args, kwargs=kwargs)
-        thread.start()
-
-        while not self.register_finish_event.is_set():
-            await asyncio.sleep(0.1)
-
-        self.register_finish_event.clear()
-        return self.source_info
+        return await asyncio.to_thread(self.register, *args, **kwargs)
 
     
