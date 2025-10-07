@@ -1,5 +1,7 @@
 from typing import Any, Dict, List
 import numpy as np
+import asyncio
+import threading
 
 from .loader import load_source_frames
 from .source2info import Source2Info
@@ -58,6 +60,8 @@ class AvatarRegistrar:
             appearance_extractor_cfg,
             motion_extractor_cfg,
         )
+        self.register_finish_event = asyncio.Event()
+        self.source_info = None
 
     def setup_source_info(
         self,
@@ -106,7 +110,19 @@ class AvatarRegistrar:
         rgb_list, is_image_flag = load_source_frames(source_path, max_dim=max_dim, n_frames=n_frames)
         source_info = self.setup_source_info(rgb_list, is_image_flag, **kwargs)
         return source_info
-    
-    def __call__(self, *args, **kwargs):
-        return self.register(*args, **kwargs)
+
+    def registrar_threaded(self, *args, **kwargs):
+        self.source_info = self.register(*args, **kwargs)
+        self.register_finish_event.set()
+
+    async def __call__(self, *args, **kwargs):
+        thread = threading.Thread(target=self.registrar_threaded, args=args, kwargs=kwargs)
+        thread.start()
+
+        while not self.register_finish_event.is_set():
+            await asyncio.sleep(0.1)
+
+        self.register_finish_event.clear()
+        return self.source_info
+
     
