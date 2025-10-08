@@ -1,7 +1,6 @@
 from typing import Any, Dict, List
 import numpy as np
 import asyncio
-import threading
 
 from .loader import load_source_frames
 from .source2info import Source2Info
