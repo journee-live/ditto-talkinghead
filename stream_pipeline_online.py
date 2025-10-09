@@ -642,7 +642,7 @@ class StreamSDK:
                 )
                 if not is_end:
                     item, chunk_idx = self.audio2motion_queue.get(
-                        timeout=0.05
+                        timeout=0.005
                     )  # audio feat
                     if not started_processing:
                         logger.info("Starting processing audio2motion")
@@ -785,7 +785,6 @@ class StreamSDK:
 
             if thread.is_alive():
                 logger.warning(f"THREAD {thread.name} didn't join")
-                thread._stop()
             else:
                 logger.info(f"FINISHED THREAD {thread.name}")
 
@@ -915,11 +914,29 @@ class StreamSDK:
         mouth_opening_scale: float,
         filter_amount: float,
     ):
-        self.reset()
         frame_idx = _mirror_index(
             start_gen_frame_idx, self.source_info_frames, self.mirror_period
         )
         logger.info(f"Setting up frame transition to frame: {start_gen_frame_idx} with frame_idx: {frame_idx} and source_info_frames: {self.source_info_frames}")
+        self.starting_gen_frame_idx = start_gen_frame_idx + 1
+
+        logger.info("reset")
+        self.fps_tracker.stop()
+        self.motion_stitch.reset_state()
+        self.audio2motion.reset_state()
+
+        # Clear all queues
+        self.audio2motion_queue.queue.clear()
+        self.motion_stitch_queue.queue.clear()
+        self.putback_queue.queue.clear()
+        self.warp_f3d_queue.queue.clear()
+        self.decode_f3d_queue.queue.clear()
+        self.frame_queue.queue.clear()
+        self.hubert_features_queue.queue.clear()
+        self.motion_stitch_out_queue.queue.clear()
+
+        self.expected_frames.set(0)
+        self.pending_frames.set(0)
 
         self.setup_Nd(
             fade_in,
@@ -932,7 +949,6 @@ class StreamSDK:
             filter_amount=filter_amount,
         )
 
-        self.starting_gen_frame_idx = start_gen_frame_idx + 1
         self.reset_audio_features()
         self.start_processing_audio()
 
