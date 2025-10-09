@@ -216,7 +216,7 @@ class StreamSDK:
         self.motion_stitch.mouth_opening_scale = mouth_opening_scale
         self.audio2motion.filter_amount = filter_amount
 
-    def setup(self, source_path, source_info=None, **kwargs):
+    async def setup(self, source_path, source_info=None, **kwargs):
         # ======== Prepare Options ========
         kwargs = self._merge_kwargs(self.default_kwargs, kwargs)
         print("=" * 20, "setup kwargs", "=" * 20)
@@ -296,7 +296,7 @@ class StreamSDK:
         }
         n_frames = self.template_n_frames if self.template_n_frames > 0 else self.N_d
         if source_info is None:
-            source_info = self.avatar_registrar(
+            source_info = await self.avatar_registrar(
                 source_path,
                 max_dim=self.max_size,
                 n_frames=n_frames,
