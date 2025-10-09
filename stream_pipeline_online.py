@@ -932,7 +932,7 @@ class StreamSDK:
             filter_amount=filter_amount,
         )
 
-        self.starting_gen_frame_idx = frame_idx
+        self.starting_gen_frame_idx = start_gen_frame_idx + 1
         self.reset_audio_features()
         self.start_processing_audio()
 
@@ -943,7 +943,7 @@ class StreamSDK:
                     frame_idx,
                     motion_data,
                     ctrl_kwargs,
-                    frame_idx,
+                    start_gen_frame_idx,
                 ],
                 timeout=0.1,
             )
