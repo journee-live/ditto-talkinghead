@@ -1,3 +1,4 @@
+import asyncio
 import queue
 import threading
 import time
@@ -642,7 +643,7 @@ class StreamSDK:
                 )
                 if not is_end:
                     item, chunk_idx = self.audio2motion_queue.get(
-                        timeout=0.05
+                        timeout=0.005
                     )  # audio feat
                     if not started_processing:
                         logger.info("Starting processing audio2motion")
@@ -785,7 +786,6 @@ class StreamSDK:
 
             if thread.is_alive():
                 logger.warning(f"THREAD {thread.name} didn't join")
-                thread._stop()
             else:
                 logger.info(f"FINISHED THREAD {thread.name}")
 
@@ -843,10 +843,13 @@ class StreamSDK:
         self.expected_frames.increment(self.chunk_size[1])
         self.pending_frames.increment(self.chunk_size[1])
 
-    def process_audio(
+    async def process_audio(
         self, audio: np.ndarray, pad_audio: bool = False, max_frames: int = -1
     ) -> np.ndarray:
         self.waiting_for_first_audio = False
+
+        while self.reset_audio2motion_needed.is_set():
+            await asyncio.sleep(0.01)
 
         # Process each chunk
         processed_audio_idx = 0
@@ -915,11 +918,29 @@ class StreamSDK:
         mouth_opening_scale: float,
         filter_amount: float,
     ):
-        self.reset()
         frame_idx = _mirror_index(
             start_gen_frame_idx, self.source_info_frames, self.mirror_period
         )
         logger.info(f"Setting up frame transition to frame: {start_gen_frame_idx} with frame_idx: {frame_idx} and source_info_frames: {self.source_info_frames}")
+        self.starting_gen_frame_idx = start_gen_frame_idx + 1
+
+        logger.info("reset")
+        self.fps_tracker.stop()
+        self.motion_stitch.reset_state()
+        self.audio2motion.reset_state()
+
+        # Clear all queues
+        self.audio2motion_queue.queue.clear()
+        self.motion_stitch_queue.queue.clear()
+        self.putback_queue.queue.clear()
+        self.warp_f3d_queue.queue.clear()
+        self.decode_f3d_queue.queue.clear()
+        self.frame_queue.queue.clear()
+        self.hubert_features_queue.queue.clear()
+        self.motion_stitch_out_queue.queue.clear()
+
+        self.expected_frames.set(0)
+        self.pending_frames.set(0)
 
         self.setup_Nd(
             fade_in,
@@ -932,7 +953,6 @@ class StreamSDK:
             filter_amount=filter_amount,
         )
 
-        self.starting_gen_frame_idx = frame_idx
         self.reset_audio_features()
         self.start_processing_audio()
 
@@ -943,7 +963,7 @@ class StreamSDK:
                     frame_idx,
                     motion_data,
                     ctrl_kwargs,
-                    frame_idx,
+                    start_gen_frame_idx,
                 ],
                 timeout=0.1,
             )
