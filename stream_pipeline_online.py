@@ -1,3 +1,4 @@
+import asyncio
 import queue
 import threading
 import time
@@ -842,10 +843,13 @@ class StreamSDK:
         self.expected_frames.increment(self.chunk_size[1])
         self.pending_frames.increment(self.chunk_size[1])
 
-    def process_audio(
+    async def process_audio(
         self, audio: np.ndarray, pad_audio: bool = False, max_frames: int = -1
     ) -> np.ndarray:
         self.waiting_for_first_audio = False
+
+        while self.reset_audio2motion_needed.is_set():
+            await asyncio.sleep(0.01)
 
         # Process each chunk
         processed_audio_idx = 0
