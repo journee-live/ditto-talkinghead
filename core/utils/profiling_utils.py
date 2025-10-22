@@ -1,8 +1,10 @@
 import time
+from dataclasses import dataclass
 
 from loguru import logger
 
 
+@dataclass
 class FPSTracker:
     total_frames: int = 0
     total_frames_time: float = 0
@@ -11,10 +13,24 @@ class FPSTracker:
     last_partial_time: float = 0
     total_partial_time: float = 0
     is_running: bool = False
-    id: str = ""    
+    min_fps: float = 0
+    max_fps: float = 0
+    id: str = ""
 
     def __init__(self, id: str):
+        super().__init__()
         self.id = id
+        # Initialize all tracked fields explicitly since we override dataclass __init__
+        self.total_frames = 0
+        self.total_frames_time = 0.0
+        self.last_update_time = 0.0
+        self.partial_frames = 0
+        self.last_partial_time = 0.0
+        self.total_partial_time = 0.0
+        self.is_running = False
+        # Use +inf so the first real partial FPS becomes the initial min
+        self.min_fps = float("inf")
+        self.max_fps = 0.0
 
     def start(self):
         # This method should be called when the first frame is generated
@@ -60,5 +76,12 @@ class FPSTracker:
         logger.debug(
             f"{self.id} : FPS={self.average_fps:.4f} PartialFPS: {self.partial_average_fps:.4f} total_frames:{self.total_frames} partial_frames:{self.partial_frames} "
         )
+        current_partial_fps = self.partial_average_fps
+        self.max_fps = max(self.max_fps, current_partial_fps)
+        if self.min_fps == float("inf"):
+            self.min_fps = current_partial_fps
+        else:
+            self.min_fps = min(self.min_fps, current_partial_fps)
         self.partial_frames = 0
         self.total_partial_time = 0
+
