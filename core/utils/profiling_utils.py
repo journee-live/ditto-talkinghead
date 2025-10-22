@@ -13,7 +13,7 @@ class FPSTracker:
     last_partial_time: float = 0
     total_partial_time: float = 0
     is_running: bool = False
-    min_fps: float = 0
+    min_fps: float = 5000
     max_fps: float = 0
     id: str = ""
 
@@ -72,16 +72,15 @@ class FPSTracker:
         return (self.partial_frames) / (self.total_partial_time)
 
     def log(self):
+        if self.partial_average_fps == 0:
+            return
+
         """Log current statistics."""
         logger.debug(
             f"{self.id} : FPS={self.average_fps:.4f} PartialFPS: {self.partial_average_fps:.4f} total_frames:{self.total_frames} partial_frames:{self.partial_frames} "
         )
         current_partial_fps = self.partial_average_fps
         self.max_fps = max(self.max_fps, current_partial_fps)
-        if self.min_fps == float("inf"):
-            self.min_fps = current_partial_fps
-        else:
-            self.min_fps = min(self.min_fps, current_partial_fps)
+        self.min_fps = min(self.min_fps, current_partial_fps)
         self.partial_frames = 0
         self.total_partial_time = 0
-
