@@ -132,6 +132,7 @@ class SourceInfoManager:
 
     def set_source_info(self, source_info: Dict[str, Any]):
         self.source_info = source_info
+        self.total_frames_count = len(source_info["img_rgb_lst"])
 
     def setup_source_info(
         self,
