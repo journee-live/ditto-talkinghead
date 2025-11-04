@@ -1,5 +1,7 @@
 from typing import Any, Dict, List
+import time
 import numpy as np
+from loguru import logger
 import asyncio
 
 from .loader import load_source_frames
@@ -88,7 +90,7 @@ class AvatarRegistrar:
 
         source_info["sc"] = sc_f0
         source_info["is_image_flag"] = is_image_flag
-        source_info["img_rgb_lst"] = rgb_frames
+        source_info["img_rgb_lst"]   = rgb_frames
         return source_info
 
     def register(
@@ -105,7 +107,10 @@ class AvatarRegistrar:
             crop_vy_ratio: -0.125
             crop_flag_do_rot: True
         """
+        load_start_time = time.perf_counter()
         rgb_list, is_image_flag = load_source_frames(source_path, max_dim=max_dim, n_frames=n_frames)
+        load_end_time = time.perf_counter()
+        logger.info(f"source video loading took: {load_end_time - load_start_time}s")
         source_info = self.setup_source_info(rgb_list, is_image_flag, **kwargs)
         return source_info
 
