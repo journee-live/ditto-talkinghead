@@ -71,7 +71,6 @@ class SourceInfoManager:
             "eye_open_lst": [],
             "eye_ball_lst": [],
         }
-        self.total_frames_count = 0
         self.cancel_regsiter_thread = threading.Event()
         self.pushed_entry_event = threading.Event()
         self.smo_k_s: int = 0
@@ -89,6 +88,7 @@ class SourceInfoManager:
         
 
     def wait_until_index_ready(self, key: str, index: int):
+        logger.debug(f"waiting for index: {index} for key: {key}, current value has {len(self.source_info[key])} entries")
         while len(self.source_info[key]) <= index:
             self.pushed_entry_event.wait()
             self.pushed_entry_event.clear()
@@ -113,15 +113,16 @@ class SourceInfoManager:
             result = self.source_info[key][index]
         return result
 
-    def wait_for_loaded_source(self):
-        while self.total_frames_count == 0:
-            time.sleep(0.001)
-
     async def get_source_video_frame_count(self):
-        await asyncio.to_thread(self.wait_for_loaded_source)
-        return self.total_frames_count
+        if "img_rgb_lst" not in self.source_info:
+            rgb_list = await asyncio.to_thread(self.get_source_info_component, "img_rgb_lst")
+        else:
+            rgb_list = self.source_info["img_rgb_lst"]
+            
+        return len(rgb_list)
 
     def get_source_info_component(self, key: str):
+        logger.debug(f"getting component {key} from source info")
         result = None
         while result == None:
             time.sleep(0.001)
@@ -132,7 +133,6 @@ class SourceInfoManager:
 
     def set_source_info(self, source_info: Dict[str, Any]):
         self.source_info = source_info
-        self.total_frames_count = len(source_info["img_rgb_lst"])
 
     def setup_source_info(
         self,
@@ -140,13 +140,14 @@ class SourceInfoManager:
         is_image_flag: bool,
         **kwargs
     ):
+        logger.debug("started generating source info")
         with self.source_gen_mutex:
             self.source_info["is_image_flag"] = is_image_flag
             self.source_info["img_rgb_lst"]   = rgb_frames
 
         keys = ["x_s_info", "f_s", "M_c2o", "eye_open", "eye_ball"]
         last_lmk = None
-        for rgb in rgb_frames:
+        for idx, rgb in enumerate(rgb_frames):
             if self.cancel_regsiter_thread.is_set():
                 return
 
@@ -163,8 +164,10 @@ class SourceInfoManager:
 
             last_lmk = info["lmk203"]
             self.pushed_entry_event.set()
+            logger.debug(f"generated source info entry: {idx}")
 
         # final setup
+        logger.debug(f"source info final setup")
         with self.source_gen_mutex:
             self.source_info["eye_open_lst"] = np.concatenate(self.source_info["eye_open_lst"], 0)  # [n, 2]
             self.source_info["eye_ball_lst"] = np.concatenate(self.source_info["eye_ball_lst"], 0)  # [n, 2]
@@ -190,20 +193,23 @@ class SourceInfoManager:
         """
         load_start_time = time.perf_counter()
         rgb_list, is_image_flag = load_source_frames(source_path, max_dim=max_dim, n_frames=n_frames)
-        self.total_frames_count = len(rgb_list)
         load_end_time = time.perf_counter()
         logger.info(f"source video loading took: {load_end_time - load_start_time}s")
         self.setup_source_info(rgb_list, is_image_flag, **kwargs)
 
     async def __call__(self, *args, **kwargs):
-        if self.register_thread is not None:
-            self.cancel_regsiter_thread.set()
-            self.register_thread.join()
+        self.cancel_registering()
 
-        self.cancel_regsiter_thread.clear()
         self.reset_source_info()
         self.register_thread = threading.Thread(target=self.register, args=args, kwargs=kwargs)
         self.register_thread.start()
-        #return await asyncio.to_thread(self.register, *args, **kwargs)
+        
+    def cancel_registering(self):
+        if self.register_thread is not None:
+            self.cancel_regsiter_thread.set()
+            self.register_thread.join()
+            self.register_thread = None
+
+        self.cancel_regsiter_thread.clear()
 
     
