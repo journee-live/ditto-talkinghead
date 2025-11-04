@@ -72,10 +72,10 @@ class SourceInfoManager:
             "eye_ball_lst": [],
         }
         self.cancel_regsiter_thread = threading.Event()
-        self.pushed_entry_event = threading.Event()
         self.smo_k_s: int = 0
         self.source_gen_mutex = threading.Lock()
         self.register_thread: threading.Thread|None = None
+        self.condition = threading.Condition()
 
     def reset_source_info(self):
         self.source_info = {
@@ -90,8 +90,8 @@ class SourceInfoManager:
     def wait_until_index_ready(self, key: str, index: int):
         logger.debug(f"waiting for index: {index} for key: {key}, current value has {len(self.source_info[key])} entries")
         while len(self.source_info[key]) <= index:
-            self.pushed_entry_event.wait()
-            self.pushed_entry_event.clear()
+            with self.condition:
+                self.condition.wait()
 
     async def get_source_info_value_for_indices_list(
         self,
@@ -102,7 +102,7 @@ class SourceInfoManager:
         with self.source_gen_mutex:
             result = self.source_info[key][indices]
         return result
-            
+
     async def get_source_info_value_for_index(
         self,
         key: str,
@@ -163,7 +163,8 @@ class SourceInfoManager:
                     self.source_info["sc"] = sc_f0
 
             last_lmk = info["lmk203"]
-            self.pushed_entry_event.set()
+            with self.condition:
+                self.condition.notify()
             logger.debug(f"generated source info entry: {idx}")
 
         # final setup
