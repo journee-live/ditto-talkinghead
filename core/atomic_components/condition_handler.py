@@ -3,6 +3,7 @@ import copy
 import numpy as np
 from scipy.special import softmax
 
+from spall_profiler import spall_profiler
 
 def _get_emo_avg(idx=6):
     emo_avg = np.zeros(8, dtype=np.float32)
@@ -120,6 +121,7 @@ class ConditionHandler:
         else:
             return emo_seq
 
+    @spall_profiler.profile("ConditionHandler")
     def __call__(self, aud_feat, idx, emo=None):
         """
         aud_feat: [n, 1024]

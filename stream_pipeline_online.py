@@ -398,38 +398,39 @@ class StreamSDK:
                 self.putback_queue.task_done()
                 continue
 
-            frame_idx, render_img, gen_frame_idx = item
-            # source_info["img_rgb_lst"][frame_idx]
-            # source_info["M_c2o_lst"][frame_idx]
-            frame_rgb = await self.source_info_manager.get_source_info_value_for_index("img_rgb_lst", frame_idx)
-            M_c2o = await self.source_info_manager.get_source_info_value_for_index("M_c2o_lst", frame_idx)
-            res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
-            self.pending_frames.decrement(1)
+            with spall_profiler.profile_block("putback iteration"):
+                frame_idx, render_img, gen_frame_idx = item
+                # source_info["img_rgb_lst"][frame_idx]
+                # source_info["M_c2o_lst"][frame_idx]
+                frame_rgb = await self.source_info_manager.get_source_info_value_for_index("img_rgb_lst", frame_idx)
+                M_c2o = await self.source_info_manager.get_source_info_value_for_index("M_c2o_lst", frame_idx)
+                res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
+                self.pending_frames.decrement(1)
 
-            # Encode frame to JPEG
-            # Create a PIL Image
-            img = Image.fromarray(res_frame_rgb, "RGB")
+                # Encode frame to JPEG
+                # Create a PIL Image
+                img = Image.fromarray(res_frame_rgb, "RGB")
 
-            # Save to memory buffer as JPEG
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG")
-            frame_data = buf.getvalue()
+                # Save to memory buffer as JPEG
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG")
+                frame_data = buf.getvalue()
 
-            if not self.fps_tracker.is_running:
-                self.fps_tracker.start()
+                if not self.fps_tracker.is_running:
+                    self.fps_tracker.start()
 
-            self.fps_tracker.update(1)
+                self.fps_tracker.update(1)
 
-            if self.fps_tracker.total_frames == 1:
-                logger.info(
-                    f"Time until first frame: {time.monotonic() - self.start_processing_time}"
-                )
+                if self.fps_tracker.total_frames == 1:
+                    logger.info(
+                        f"Time until first frame: {time.monotonic() - self.start_processing_time}"
+                    )
 
-            if gen_frame_idx % 25 == 0:
-                self.fps_tracker.log()
+                if gen_frame_idx % 25 == 0:
+                    self.fps_tracker.log()
 
-            self.frame_queue.put([frame_data, frame_idx, gen_frame_idx])
-            self.putback_queue.task_done()
+                self.frame_queue.put([frame_data, frame_idx, gen_frame_idx])
+                self.putback_queue.task_done()
 
     def decode_f3d_worker(self):
         try:
@@ -449,10 +450,11 @@ class StreamSDK:
                 self.decode_f3d_queue.task_done()
                 continue
 
-            frame_idx, f_3d, gen_frame_idx = item
-            render_img = self.decode_f3d(f_3d)
-            self.putback_queue.put([frame_idx, render_img, gen_frame_idx])
-            self.decode_f3d_queue.task_done()
+            with spall_profiler.profile_block("decode_f3d iteration"):
+                frame_idx, f_3d, gen_frame_idx = item
+                render_img = self.decode_f3d(f_3d)
+                self.putback_queue.put([frame_idx, render_img, gen_frame_idx])
+                self.decode_f3d_queue.task_done()
 
     def warp_f3d_worker(self):
         try:
@@ -473,12 +475,13 @@ class StreamSDK:
                 self.warp_f3d_queue.task_done()
                 continue
 
-            frame_idx, x_s, x_d, gen_frame_idx = item
-            # source_info["f_s_lst"][frame_idx]
-            f_s = await self.source_info_manager.get_source_info_value_for_index("f_s_lst", frame_idx)
-            f_3d = self.warp_f3d(f_s, x_s, x_d)
-            self.decode_f3d_queue.put([frame_idx, f_3d, gen_frame_idx])
-            self.warp_f3d_queue.task_done()
+            with spall_profiler.profile_block("warp f3d iteration"):
+                frame_idx, x_s, x_d, gen_frame_idx = item
+                # source_info["f_s_lst"][frame_idx]
+                f_s = await self.source_info_manager.get_source_info_value_for_index("f_s_lst", frame_idx)
+                f_3d = self.warp_f3d(f_s, x_s, x_d)
+                self.decode_f3d_queue.put([frame_idx, f_3d, gen_frame_idx])
+                self.warp_f3d_queue.task_done()
 
     def motion_stitch_worker(self):
         # try:
@@ -501,20 +504,21 @@ class StreamSDK:
                 self.motion_stitch_queue.task_done()
                 continue
 
-            frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx = item
-            # source_info["x_s_info_lst"][frame_idx]
-            x_s_info = await self.source_info_manager.get_source_info_value_for_index("x_s_info_lst", frame_idx)
-            if (
-                gen_frame_idx
-                == self.expected_frames.get() + self.starting_gen_frame_idx - 1
-            ):
-                logger.info("Last frame on motion stitch worker!!!")
-            x_s, x_d, x_d_info = self.motion_stitch(x_s_info, x_d_info, **ctrl_kwargs)
-            num_frames_stitched += 1
-            if self.motion_output_enabled:
-                self.motion_stitch_out_queue.put([x_d_info, frame_idx, gen_frame_idx])
-            self.warp_f3d_queue.put([frame_idx, x_s, x_d, gen_frame_idx])
-            self.motion_stitch_queue.task_done()
+            with spall_profiler.profile_block("motion stitch iteration"):
+                frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx = item
+                # source_info["x_s_info_lst"][frame_idx]
+                x_s_info = await self.source_info_manager.get_source_info_value_for_index("x_s_info_lst", frame_idx)
+                if (
+                    gen_frame_idx
+                    == self.expected_frames.get() + self.starting_gen_frame_idx - 1
+                ):
+                    logger.info("Last frame on motion stitch worker!!!")
+                x_s, x_d, x_d_info = self.motion_stitch(x_s_info, x_d_info, **ctrl_kwargs)
+                num_frames_stitched += 1
+                if self.motion_output_enabled:
+                    self.motion_stitch_out_queue.put([x_d_info, frame_idx, gen_frame_idx])
+                self.warp_f3d_queue.put([frame_idx, x_s, x_d, gen_frame_idx])
+                self.motion_stitch_queue.task_done()
 
     def hubert_worker(self):
         try:
@@ -549,13 +553,14 @@ class StreamSDK:
             if audio_chunk is None:
                 continue
 
-            # Process audio through HuBERT
-            item = self.wav2feat(audio_chunk, chunksize=self.chunk_size)
+            with spall_profiler.profile_block("hubert iteration"):
+                # Process audio through HuBERT
+                item = self.wav2feat(audio_chunk, chunksize=self.chunk_size)
 
-            # Put the processed features in the queue
-            self.audio2motion_queue.put((item, chunk_idx))
-            self.hubert_features_queue.task_done()
-            chunk_idx += 1
+                # Put the processed features in the queue
+                self.audio2motion_queue.put((item, chunk_idx))
+                self.hubert_features_queue.task_done()
+                chunk_idx += 1
 
     def audio2motion_worker(self):
         try:
@@ -820,6 +825,7 @@ class StreamSDK:
     def reset_audio_features(self):
         self.reset_audio2motion_needed.set()
 
+    @spall_profiler.profile()
     def start_processing_audio(
         self
     ):
@@ -837,6 +843,7 @@ class StreamSDK:
         logger.info("end_processing_audio")
         self.is_expecting_more_audio.clear()
 
+    @spall_profiler.profile()
     def process_audio_chunk(self, audio_chunk):
         # Clear all finished flags when new work is submitted
         self.hubert_finished.clear()
@@ -847,6 +854,7 @@ class StreamSDK:
         self.expected_frames.increment(self.chunk_size[1])
         self.pending_frames.increment(self.chunk_size[1])
 
+    @spall_profiler.profile()
     async def process_audio(
         self, audio: np.ndarray, pad_audio: bool = False, max_frames: int = -1
     ) -> np.ndarray:
@@ -912,6 +920,7 @@ class StreamSDK:
             and is_not_expecting_more_audio
         )
 
+    @spall_profiler.profile()
     async def setup_frame_transition(
         self,
         start_gen_frame_idx: int,
