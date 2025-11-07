@@ -5,6 +5,8 @@ import numpy as np
 from loguru import logger
 import asyncio
 
+from spall_profiler import spall_profiler
+
 from .loader import load_source_frames
 from .source2info import Source2Info
 from ..utils.exceptions import UnsupportedSourceException
@@ -87,12 +89,14 @@ class SourceInfoManager:
         }
         
 
+    @spall_profiler.profile()
     def wait_until_index_ready(self, key: str, index: int):
         logger.debug(f"waiting for index: {index} for key: {key}, current value has {len(self.source_info[key])} entries")
         while len(self.source_info[key]) <= index:
             with self.condition:
                 self.condition.wait()
 
+    @spall_profiler.profile()
     async def get_source_info_value_for_indices_list(
         self,
         key: str,
@@ -103,6 +107,7 @@ class SourceInfoManager:
             result = self.source_info[key][indices]
         return result
 
+    @spall_profiler.profile()
     async def get_source_info_value_for_index(
         self,
         key: str,
@@ -113,6 +118,7 @@ class SourceInfoManager:
             result = self.source_info[key][index]
         return result
 
+    @spall_profiler.profile()
     async def get_source_video_frame_count(self):
         if "img_rgb_lst" not in self.source_info:
             rgb_list = await asyncio.to_thread(self.get_source_info_component, "img_rgb_lst")
@@ -121,6 +127,7 @@ class SourceInfoManager:
             
         return len(rgb_list)
 
+    @spall_profiler.profile()
     def get_source_info_component(self, key: str):
         logger.debug(f"getting component {key} from source info")
         result = None
@@ -131,9 +138,11 @@ class SourceInfoManager:
         return result
         
 
+    @spall_profiler.profile()
     def set_source_info(self, source_info: Dict[str, Any]):
         self.source_info = source_info
 
+    @spall_profiler.profile()
     def setup_source_info(
         self,
         rgb_frames: List[np.ndarray],
@@ -148,24 +157,25 @@ class SourceInfoManager:
         keys = ["x_s_info", "f_s", "M_c2o", "eye_open", "eye_ball"]
         last_lmk = None
         for idx, rgb in enumerate(rgb_frames):
-            if self.cancel_regsiter_thread.is_set():
-                return
+            with spall_profiler.profile_block("source info generation loop"):
+                if self.cancel_regsiter_thread.is_set():
+                    return
 
-            info = self.source2info(rgb, last_lmk, **kwargs)
-            with self.source_gen_mutex:
-                for k in keys:
-                    self.source_info[f"{k}_lst"].append(info[k])
-
-            if last_lmk is None:
-                # first frame
-                sc_f0 = self.source_info['x_s_info_lst'][0]['kp'].flatten()
+                info = self.source2info(rgb, last_lmk, **kwargs)
                 with self.source_gen_mutex:
-                    self.source_info["sc"] = sc_f0
+                    for k in keys:
+                        self.source_info[f"{k}_lst"].append(info[k])
 
-            last_lmk = info["lmk203"]
-            with self.condition:
-                self.condition.notify()
-            logger.debug(f"generated source info entry: {idx}")
+                if last_lmk is None:
+                    # first frame
+                    sc_f0 = self.source_info['x_s_info_lst'][0]['kp'].flatten()
+                    with self.source_gen_mutex:
+                        self.source_info["sc"] = sc_f0
+
+                last_lmk = info["lmk203"]
+                with self.condition:
+                    self.condition.notify()
+                logger.debug(f"generated source info entry: {idx}")
 
         # final setup
         logger.debug(f"source info final setup")
@@ -176,8 +186,10 @@ class SourceInfoManager:
             smooth_x_s_info_lst(
                 x_s_info_list=self.source_info["x_s_info_lst"],
                 smo_k=self.smo_k_s)
+        logger.debug(f"source info generation done")
 
 
+    @spall_profiler.profile()
     def register(
         self,
         source_path,  # image | video
@@ -198,13 +210,15 @@ class SourceInfoManager:
         logger.info(f"source video loading took: {load_end_time - load_start_time}s")
         self.setup_source_info(rgb_list, is_image_flag, **kwargs)
 
+    @spall_profiler.profile("SourceInfoManager")
     async def __call__(self, *args, **kwargs):
         self.cancel_registering()
 
         self.reset_source_info()
         self.register_thread = threading.Thread(target=self.register, args=args, kwargs=kwargs)
         self.register_thread.start()
-        
+
+    @spall_profiler.profile()
     def cancel_registering(self):
         if self.register_thread is not None:
             self.cancel_regsiter_thread.set()

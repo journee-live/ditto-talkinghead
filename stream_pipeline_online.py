@@ -5,6 +5,7 @@ import time
 import traceback
 from typing import Any, Dict, List
 
+from spall_profiler import spall_profiler
 import io
 from PIL import Image
 
