@@ -12,8 +12,8 @@ from PIL import Image
 from pydantic import BaseModel
 
 from .core.atomic_components.audio2motion import Audio2Motion
-from .core.atomic_components.avatar_registrar import (
-    AvatarRegistrar,
+from .core.atomic_components.source_info_manager import (
+    SourceInfoManager,
     smooth_x_s_info_lst,
 )
 from .core.atomic_components.cfg import parse_cfg, print_cfg
@@ -23,6 +23,7 @@ from .core.atomic_components.motion_stitch import MotionStitch
 from .core.atomic_components.putback import PutBack
 from .core.atomic_components.warp_f3d import WarpF3D
 from .core.atomic_components.wav2feat import Wav2Feat
+from .core.atomic_components.loader import load_source_frames
 from .core.utils.profiling_utils import FPSTracker
 from .core.utils.threading_utils import AtomicCounter
 
@@ -79,7 +80,7 @@ class StreamSDK:
 
         self.default_kwargs = default_kwargs
         self.BYTES_PER_FRAME = 640
-        self.avatar_registrar = AvatarRegistrar(**avatar_registrar_cfg)
+        self.source_info_manager = SourceInfoManager(**avatar_registrar_cfg)
         self.condition_handler = ConditionHandler(**condition_handler_cfg)
         self.audio2motion = Audio2Motion(lmdm_cfg)
         self.motion_stitch = MotionStitch(stitch_network_cfg)
@@ -296,25 +297,21 @@ class StreamSDK:
             "crop_flag_do_rot": self.crop_flag_do_rot,
         }
         n_frames = self.template_n_frames if self.template_n_frames > 0 else self.N_d
+
+        self.source_info_manager.smo_k_s = self.smo_k_s
         if source_info is None:
-            source_info = await self.avatar_registrar(
+            await self.source_info_manager(
                 source_path,
                 max_dim=self.max_size,
                 n_frames=n_frames,
                 **crop_kwargs,
             )
-
-        if len(source_info["x_s_info_lst"]) > 1 and self.smo_k_s > 1:
-            source_info["x_s_info_lst"] = smooth_x_s_info_lst(
-                source_info["x_s_info_lst"], smo_k=self.smo_k_s
-            )
-
-        self.source_info = source_info
-        self.source_info_frames = len(source_info["x_s_info_lst"])
+        else:
+            self.source_info_manager.set_source_info(source_info)
 
         # ======== Setup Condition Handler ========
         self.condition_handler.setup(
-            source_info, self.emo, eye_f0_mode=self.eye_f0_mode, ch_info=self.ch_info
+            self.emo, eye_f0_mode=self.eye_f0_mode, ch_info=self.ch_info
         )
 
         # ======== Setup Audio2Motion (LMDM) ========
@@ -331,8 +328,9 @@ class StreamSDK:
         )
 
         # ======== Setup Motion Stitch ========
-        is_image_flag = source_info["is_image_flag"]
-        x_s_info = source_info["x_s_info_lst"][0]
+        is_image_flag = self.source_info_manager.get_source_info_component("is_image_flag")
+        # source_info["x_s_info_lst"][0]
+        x_s_info = await self.source_info_manager.get_source_info_value_for_index("x_s_info_lst", 0)
         self.motion_stitch.setup(
             N_d=self.N_d,
             use_d_keys=self.use_d_keys,
@@ -383,12 +381,12 @@ class StreamSDK:
 
     def putback_worker(self):
         try:
-            self._putback_worker()
+            asyncio.run(self._putback_worker())
         except Exception as e:
             self.worker_exception = e
             self.stop_event.set()
 
-    def _putback_worker(self):
+    async def _putback_worker(self):
         while not self.stop_event.is_set():
             try:
                 item = self.putback_queue.get(timeout=0.05)
@@ -400,8 +398,10 @@ class StreamSDK:
                 continue
 
             frame_idx, render_img, gen_frame_idx = item
-            frame_rgb = self.source_info["img_rgb_lst"][frame_idx]
-            M_c2o = self.source_info["M_c2o_lst"][frame_idx]
+            # source_info["img_rgb_lst"][frame_idx]
+            # source_info["M_c2o_lst"][frame_idx]
+            frame_rgb = await self.source_info_manager.get_source_info_value_for_index("img_rgb_lst", frame_idx)
+            M_c2o = await self.source_info_manager.get_source_info_value_for_index("M_c2o_lst", frame_idx)
             res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
             self.pending_frames.decrement(1)
 
@@ -464,12 +464,12 @@ class StreamSDK:
 
     def warp_f3d_worker(self):
         try:
-            self._warp_f3d_worker()
+            asyncio.run(self._warp_f3d_worker())
         except Exception as e:
             self.worker_exception = e
             self.stop_event.set()
 
-    def _warp_f3d_worker(self):
+    async def _warp_f3d_worker(self):
         while not self.stop_event.is_set():
             try:
                 item = self.warp_f3d_queue.get(timeout=0.05)
@@ -482,20 +482,21 @@ class StreamSDK:
                 continue
 
             frame_idx, x_s, x_d, gen_frame_idx = item
-            f_s = self.source_info["f_s_lst"][frame_idx]
+            # source_info["f_s_lst"][frame_idx]
+            f_s = await self.source_info_manager.get_source_info_value_for_index("f_s_lst", frame_idx)
             f_3d = self.warp_f3d(f_s, x_s, x_d)
             self.decode_f3d_queue.put([frame_idx, f_3d, gen_frame_idx])
             self.warp_f3d_queue.task_done()
 
     def motion_stitch_worker(self):
         # try:
-        self._motion_stitch_worker()
+        asyncio.run(self._motion_stitch_worker())
 
     # except Exception as e:
     #     self.worker_exception = e
     #     self.stop_event.set()
 
-    def _motion_stitch_worker(self):
+    async def _motion_stitch_worker(self):
         num_frames_stitched = 0
         while not self.stop_event.is_set():
             try:
@@ -509,7 +510,8 @@ class StreamSDK:
                 continue
 
             frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx = item
-            x_s_info = self.source_info["x_s_info_lst"][frame_idx]
+            # source_info["x_s_info_lst"][frame_idx]
+            x_s_info = await self.source_info_manager.get_source_info_value_for_index("x_s_info_lst", frame_idx)
             if (
                 gen_frame_idx
                 == self.expected_frames.get() + self.starting_gen_frame_idx - 1
@@ -565,7 +567,8 @@ class StreamSDK:
 
     def audio2motion_worker(self):
         try:
-            self._audio2motion_worker()
+            asyncio.run(self._audio2motion_worker())
+
         except Exception as e:
             self.worker_exception = e
             self.stop_event.set()
@@ -602,7 +605,7 @@ class StreamSDK:
             reset_audio2motion_needed=self.reset_audio2motion_needed.is_set(),
         )
 
-    def _audio2motion_worker(self):
+    async def _audio2motion_worker(self):
         seq_frames = self.audio2motion.seq_frames
         valid_clip_len = self.audio2motion.valid_clip_len
         aud_feat_dim = self.wav2feat.feat_dim
@@ -743,7 +746,7 @@ class StreamSDK:
                             return
 
                         frame_idx = _mirror_index(
-                            gen_frame_idx, self.source_info_frames, self.mirror_period
+                            gen_frame_idx, await self.source_info_manager.get_source_video_frame_count(), self.mirror_period
                         )
                         ctrl_kwargs = self._get_ctrl_info(gen_frame_idx)
 
@@ -915,7 +918,7 @@ class StreamSDK:
             and is_not_expecting_more_audio
         )
 
-    def setup_frame_transition(
+    async def setup_frame_transition(
         self,
         start_gen_frame_idx: int,
         motion_data: dict[str, np.ndarray] | None,
@@ -925,12 +928,11 @@ class StreamSDK:
         mouth_opening_scale: float,
         filter_amount: float,
     ):
+        frames_count = await self.source_info_manager.get_source_video_frame_count()
         frame_idx = _mirror_index(
-            start_gen_frame_idx, self.source_info_frames, self.mirror_period
+            start_gen_frame_idx, frames_count, self.mirror_period
         )
-        logger.info(
-            f"Setting up frame transition to frame: {start_gen_frame_idx} with frame_idx: {frame_idx} and source_info_frames: {self.source_info_frames}"
-        )
+        logger.info(f"Setting up frame transition to frame: {start_gen_frame_idx} with frame_idx: {frame_idx} and source_info_frames: {frames_count}")
         self.starting_gen_frame_idx = start_gen_frame_idx + 1
 
         logger.info("reset")

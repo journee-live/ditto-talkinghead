@@ -47,14 +47,12 @@ class ConditionHandler:
         self.mirror_period = mirror_period
         self.seq_frames = seq_frames
 
-    def setup(self, setup_info, emo, eye_f0_mode=False, ch_info=None):
+    def setup(self, emo, eye_f0_mode=False, ch_info=None):
         """
         emo: int | [int] | [[int]] | numpy
         """
-        if ch_info is None:
-            source_info = copy.deepcopy(setup_info)
-        else:
-            source_info = ch_info
+        assert ch_info is not None
+        source_info = ch_info
 
         self.eye_f0_mode = eye_f0_mode
         self.x_s_info_0 = source_info["x_s_info_lst"][0]

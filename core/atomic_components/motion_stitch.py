@@ -130,7 +130,7 @@ def _mix_s_d_info(
         if isinstance(use_d_keys, dict):
             x_d_info = {
                 k: x_s_info[k] + (v - d0[k]) * use_d_keys.get(k, 1)
-                for k, v in x_d_info.items()
+                for k, v in x_d_info.items() if k in use_d_keys.keys()
             }
         else:
             x_d_info = {k: x_s_info[k] + (v - d0[k]) for k, v in x_d_info.items()}
