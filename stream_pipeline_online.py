@@ -1,15 +1,14 @@
 import asyncio
+import io
 import queue
 import threading
 import time
 import traceback
-from typing import Any, Dict, List
-
-import io
-from PIL import Image
+from typing import Any, Dict
 
 import numpy as np
 from loguru import logger
+from PIL import Image
 from pydantic import BaseModel
 
 from .core.atomic_components.audio2motion import Audio2Motion
@@ -48,7 +47,6 @@ wav2feat_cfg:
     w2f_cfg, 
     w2f_type
 """
-
 
 
 class SDKDebugState(BaseModel):
@@ -98,6 +96,8 @@ class StreamSDK:
         self.starting_gen_frame_idx = 0
         self.motion_output_enabled = False
         self.fps_tracker = FPSTracker("streamSDK")
+
+        self.num_times_below_25fps = 0
         self.start_processing_time = 0
 
         # Initialize the stop event for thread control
@@ -171,7 +171,7 @@ class StreamSDK:
         filter_amount=0.1,
         fade_in_frame_offset=0,
         fade_out_frame_offset=0,
-        mouth_opening_scale=1.0
+        mouth_opening_scale=1.0,
     ):
         # for eye open at video end
         self.motion_stitch.set_Nd(N_d)
@@ -425,6 +425,15 @@ class StreamSDK:
                 )
 
             if gen_frame_idx % 25 == 0:
+                if self.fps_tracker.average_fps < 25:
+                    self.num_times_below_25fps += 1
+                    if self.num_times_below_25fps > 3:
+                        logger.error(
+                            f"Average FPS is below 25 for {self.num_times_below_25fps * 25} frames. "
+                        )
+                        self.num_times_below_25fps = 0
+                        self.log_queues()
+
                 self.fps_tracker.log()
 
             self.frame_queue.put([frame_data, frame_idx, gen_frame_idx])
@@ -819,13 +828,11 @@ class StreamSDK:
     def reset_audio_features(self):
         self.reset_audio2motion_needed.set()
 
-    def start_processing_audio(
-        self
-    ):
-        logger.info(f"start_processing_audio")
-        #self.starting_gen_frame_idx = interaction_params.start_frame_idx
-        #self.audio2motion.filter_amount = interaction_params.filter_amount
-        #self.motion_stitch.mouth_opening_scale = interaction_params.mouth_opening_scale
+    def start_processing_audio(self):
+        logger.info("start_processing_audio")
+        # self.starting_gen_frame_idx = interaction_params.start_frame_idx
+        # self.audio2motion.filter_amount = interaction_params.filter_amount
+        # self.motion_stitch.mouth_opening_scale = interaction_params.mouth_opening_scale
         self.start_processing_time = time.monotonic()
         self.is_expecting_more_audio.set()
 
@@ -914,7 +921,7 @@ class StreamSDK:
     async def setup_frame_transition(
         self,
         start_gen_frame_idx: int,
-        motion_data: dict[str, np.ndarray]|None,
+        motion_data: dict[str, np.ndarray] | None,
         fade_in: int,
         fade_out: int,
         ctrl_info: Dict[str, Any],
