@@ -14,9 +14,8 @@ from loguru import logger
 from pydantic import BaseModel
 
 from .core.atomic_components.audio2motion import Audio2Motion
-from .core.atomic_components.source_info_manager import (
-    SourceInfoManager,
-    smooth_x_s_info_lst,
+from .core.atomic_components.source_info_generator import (
+    SourceInfoGenerator,
 )
 from .core.atomic_components.cfg import parse_cfg, print_cfg
 from .core.atomic_components.condition_handler import ConditionHandler, _mirror_index
@@ -69,7 +68,8 @@ class SDKDebugState(BaseModel):
 
 
 class StreamSDK:
-    def __init__(self, cfg_pkl, data_root, chunk_size, **kwargs):
+    def __init__(self, cfg_pkl, data_root, chunk_size, **kwargs
+    ):
         [
             avatar_registrar_cfg,
             condition_handler_cfg,
@@ -83,7 +83,7 @@ class StreamSDK:
 
         self.default_kwargs = default_kwargs
         self.BYTES_PER_FRAME = 640
-        self.source_info_manager = SourceInfoManager(**avatar_registrar_cfg)
+        self.source_info_generator = SourceInfoGenerator(**avatar_registrar_cfg)
         self.condition_handler = ConditionHandler(**condition_handler_cfg)
         self.audio2motion = Audio2Motion(lmdm_cfg)
         self.motion_stitch = MotionStitch(stitch_network_cfg)
@@ -219,7 +219,7 @@ class StreamSDK:
         self.motion_stitch.mouth_opening_scale = mouth_opening_scale
         self.audio2motion.filter_amount = filter_amount
 
-    async def setup(self, source_path, source_info=None, **kwargs):
+    async def setup(self, source_path, **kwargs) -> bool:
         # ======== Prepare Options ========
         kwargs = self._merge_kwargs(self.default_kwargs, kwargs)
         print("=" * 20, "setup kwargs", "=" * 20)
@@ -299,16 +299,13 @@ class StreamSDK:
         }
         n_frames = self.template_n_frames if self.template_n_frames > 0 else self.N_d
 
-        self.source_info_manager.smo_k_s = self.smo_k_s
-        if source_info is None:
-            await self.source_info_manager(
-                source_path,
-                max_dim=self.max_size,
-                n_frames=n_frames,
-                **crop_kwargs,
-            )
-        else:
-            self.source_info_manager.set_source_info(source_info)
+        loaded_from_cache = self.source_info_generator.register_avatar(
+            self.smo_k_s,
+            source_path,
+            max_dim=self.max_size,
+            n_frames=n_frames,
+            **crop_kwargs,
+        )
 
         # ======== Setup Condition Handler ========
         self.condition_handler.setup(
@@ -329,9 +326,8 @@ class StreamSDK:
         )
 
         # ======== Setup Motion Stitch ========
-        is_image_flag = self.source_info_manager.get_source_info_component("is_image_flag")
-        # source_info["x_s_info_lst"][0]
-        x_s_info = await self.source_info_manager.get_source_info_value_for_index("x_s_info_lst", 0)
+        is_image_flag = self.source_info_generator.is_image_flag
+        x_s_info = await self.source_info_generator.get_value_for_index("x_s_info_lst", 0)
         self.motion_stitch.setup(
             N_d=self.N_d,
             use_d_keys=self.use_d_keys,
@@ -367,6 +363,7 @@ class StreamSDK:
         self.frame_queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
         self.hubert_features_queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
         self._start_threads()
+        return loaded_from_cache
 
     def _get_ctrl_info(self, fid):
         try:
@@ -400,10 +397,8 @@ class StreamSDK:
 
             with spall_profiler.profile_block("putback iteration"):
                 frame_idx, render_img, gen_frame_idx = item
-                # source_info["img_rgb_lst"][frame_idx]
-                # source_info["M_c2o_lst"][frame_idx]
-                frame_rgb = await self.source_info_manager.get_source_info_value_for_index("img_rgb_lst", frame_idx)
-                M_c2o = await self.source_info_manager.get_source_info_value_for_index("M_c2o_lst", frame_idx)
+                frame_rgb = self.source_info_generator.rgb_list[frame_idx]
+                M_c2o = await self.source_info_generator.get_value_for_index("M_c2o_lst", frame_idx)
                 res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
                 self.pending_frames.decrement(1)
 
@@ -477,15 +472,20 @@ class StreamSDK:
 
             with spall_profiler.profile_block("warp f3d iteration"):
                 frame_idx, x_s, x_d, gen_frame_idx = item
-                # source_info["f_s_lst"][frame_idx]
-                f_s = await self.source_info_manager.get_source_info_value_for_index("f_s_lst", frame_idx)
+                f_s = await self.source_info_generator.get_value_for_index("f_s_lst", frame_idx)
                 f_3d = self.warp_f3d(f_s, x_s, x_d)
                 self.decode_f3d_queue.put([frame_idx, f_3d, gen_frame_idx])
                 self.warp_f3d_queue.task_done()
 
     def motion_stitch_worker(self):
         # try:
-        asyncio.run(self._motion_stitch_worker())
+        try:
+            asyncio.run(self._motion_stitch_worker())
+        except Exception as e:
+            traceback.print_exc()
+            self.worker_exception = e
+            self.stop_event.set()
+            
 
     # except Exception as e:
     #     self.worker_exception = e
@@ -506,8 +506,7 @@ class StreamSDK:
 
             with spall_profiler.profile_block("motion stitch iteration"):
                 frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx = item
-                # source_info["x_s_info_lst"][frame_idx]
-                x_s_info = await self.source_info_manager.get_source_info_value_for_index("x_s_info_lst", frame_idx)
+                x_s_info = await self.source_info_generator.get_value_for_index("x_s_info_lst", frame_idx)
                 if (
                     gen_frame_idx
                     == self.expected_frames.get() + self.starting_gen_frame_idx - 1
@@ -743,7 +742,7 @@ class StreamSDK:
                             return
 
                         frame_idx = _mirror_index(
-                            gen_frame_idx, await self.source_info_manager.get_source_video_frame_count(), self.mirror_period
+                            gen_frame_idx, await self.source_info_generator.get_source_video_frame_count(), self.mirror_period
                         )
                         ctrl_kwargs = self._get_ctrl_info(gen_frame_idx)
 
@@ -931,7 +930,7 @@ class StreamSDK:
         mouth_opening_scale: float,
         filter_amount: float,
     ):
-        frames_count = await self.source_info_manager.get_source_video_frame_count()
+        frames_count = len(self.source_info_generator.rgb_list)
         frame_idx = _mirror_index(
             start_gen_frame_idx, frames_count, self.mirror_period
         )
