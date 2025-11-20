@@ -47,14 +47,38 @@ def smooth_x_s_info_lst(x_s_info_list, ignore_keys=(), smo_k=13):
     return smo_res
 
 
-@dataclass
+MAX_FRAMES_PER_CHUNK = 25
+
+class Source_Info_Chunk:
+    def __init__(self) -> None:
+        self.data: List[Any] = []
+
+class Source_Info_List_Chunks:
+    def __init__(self) -> None:
+        self.chunks: List[Source_Info_Chunk] = []
+        self.total_count = 0
+    
+    def create_chunk(self):
+        self.chunks.append(Source_Info_Chunk())
+
 class Source_Info_Cache_Entry:
-    data: Dict[str, Any]
-    last_lmk: Any
+    def __init__(self):
+        self.lists: Dict[str, Source_Info_List_Chunks] = { # type: ignore
+            "x_s_info_lst": Source_Info_List_Chunks(),
+            "f_s_lst": Source_Info_List_Chunks(),
+            "M_c2o_lst": Source_Info_List_Chunks(),
+            "eye_open_lst": Source_Info_List_Chunks(),
+            "eye_ball_lst": Source_Info_List_Chunks(),
+        }
+        self.total_frames_count = 0
+        self.last_lmk = None
+        self.sc = None
+        self.condition = threading.Condition()
 
 class SourceInfoCachingSystem:
     def __init__(self):
         self.source_info_cache: Dict[str, Source_Info_Cache_Entry] = {}
+        self.new_cache_condition = threading.Condition()
 
     def get_avatar_id(self, source_path: str) -> str:
         avatar_id = "ditto_model." + source_path
@@ -70,47 +94,77 @@ class SourceInfoCachingSystem:
     def register_frame_info(
         self, avatar_id: str, source_info: Dict[str, Any]
     ):
-
         if avatar_id not in self.source_info_cache:
-            self.source_info_cache[avatar_id] = Source_Info_Cache_Entry(
-                data={
-                    "x_s_info_lst": [],
-                    "f_s_lst": [],
-                    "M_c2o_lst": [],
-                    "eye_open_lst": [],
-                    "eye_ball_lst": [],
-                }, 
-                last_lmk=None
-            )
+            with self.new_cache_condition:
+                self.source_info_cache[avatar_id] = Source_Info_Cache_Entry()
+                self.new_cache_condition.notify()
 
             sc_f0 = source_info['x_s_info']['kp'].flatten()
-            self.source_info_cache[avatar_id].data["sc"] = sc_f0
+            self.source_info_cache[avatar_id].sc = sc_f0
 
         assert avatar_id in self.source_info_cache
+        entry = self.source_info_cache[avatar_id]
 
         keys = ["x_s_info", "f_s", "M_c2o", "eye_open", "eye_ball"]
         for k in keys:
-            self.source_info_cache[avatar_id].data[f"{k}_lst"].append(source_info[k])
+            lst = entry.lists[f"{k}_lst"]
+            if len(lst.chunks) == 0 or len(lst.chunks[-1].data) == MAX_FRAMES_PER_CHUNK:
+                lst.create_chunk()
+            chunk = lst.chunks[-1]
+            chunk.data.append(source_info[k])
+            lst.total_count += 1
+
+        entry.total_frames_count += 1
+        with entry.condition:
+            entry.condition.notify()
     
     def finalize_avatar_registering(self, avatar_id: str, smo_k_s: int, last_lmk: Any):
         logger.debug(f"source info final setup")
         assert avatar_id in self.source_info_cache
 
-        source_info = self.source_info_cache[avatar_id].data
-        source_info["eye_open_lst"] = np.concatenate(source_info["eye_open_lst"], 0)  # [n, 2]
-        source_info["eye_ball_lst"] = np.concatenate(source_info["eye_ball_lst"], 0)  # [n, 2]
+        entry = self.source_info_cache[avatar_id]
+        for key in ["eye_open_lst", "eye_ball_lst"]:
+            lst = entry.lists[key]
+            for chunk in lst.chunks:
+                chunk.data = np.concatenate(chunk.data, 0)  # [n, 2]
+        
+        for chunk in entry.lists["x_s_info_lst"].chunks:
+            smooth_x_s_info_lst(
+                x_s_info_list=chunk.data,
+                smo_k=smo_k_s
+            )
 
-        smooth_x_s_info_lst(
-            x_s_info_list=source_info["x_s_info_lst"],
-            smo_k=smo_k_s
-        )
         self.source_info_cache[avatar_id].last_lmk = last_lmk
         
+    def try_load_source_info(self, avatar_id: str) -> bool:
+        result = False
+        return result
 
+    @spall_profiler.profile()
     def get_value_for_index(self, avatar_id: str, key: str, idx: int):
+        while True:
+            with self.new_cache_condition:
+                if avatar_id in self.source_info_cache:
+                    break
+                self.new_cache_condition.wait()
+
         assert avatar_id in self.source_info_cache
-        source_info = self.source_info_cache[avatar_id].data
-        value = source_info[key][idx]
+        entry = self.source_info_cache[avatar_id]
+        lst = entry.lists[key]
+
+        value = None
+        while value is None:
+            idx_offset = 0
+            for chunk in lst.chunks:
+                if idx_offset + len(chunk.data) > idx:
+                    value = chunk.data[idx - idx_offset]
+                    break
+                idx_offset += len(chunk.data)
+
+            if value is None:
+                with entry.condition:
+                    entry.condition.wait()
+
         return value
 
 
@@ -125,7 +179,7 @@ class SourceInfoGenerator:
         landmark478_cfg: Any,
         appearance_extractor_cfg: Any,
         motion_extractor_cfg: Any,
-    ):
+    ) -> None:
         self.source2info = Source2Info(
             insightface_det_cfg,
             landmark106_cfg,
@@ -136,9 +190,11 @@ class SourceInfoGenerator:
         )
         self.smo_k_s: int = 0
         self.avatar_id: str = ""
+        self.rgb_list: list = []
+        self.is_image_flag = False
 
 
-    def register_avatar(
+    async def register_avatar(
         self,
         smo_k_s: int,
         source_path: str,
@@ -150,24 +206,28 @@ class SourceInfoGenerator:
         self.avatar_id = source_info_caching.get_avatar_id(source_path)
 
         # TODO: avoid loading this all the time
-        self.rgb_list, self.is_image_flag = load_source_frames(source_path, max_dim=max_dim, n_frames=n_frames)
+        self.rgb_list, self.is_image_flag = await asyncio.to_thread(load_source_frames, source_path, max_dim=max_dim, n_frames=n_frames)
 
         loaded_from_cache = source_info_caching.check_avatar_in_cache(source_path)
         if not loaded_from_cache:
-            self.generate_source_info(kwargs=kwargs)
+            self.src_info_gen_thread = threading.Thread(target=self.generate_source_info, kwargs=kwargs)
+            self.src_info_gen_thread.start()
+            #self.generate_source_info(kwargs=kwargs)
+
         return loaded_from_cache
     
     def generate_source_info(self, **kwargs):
-        last_lmk = None
-        for idx, rgb in enumerate(self.rgb_list):
-            info = self.source2info(rgb, last_lmk, **kwargs)
-            source_info_caching.register_frame_info(self.avatar_id, info)
-            last_lmk = info["lmk203"]
-            logger.debug(f"generated source info entry: {idx}")
-        source_info_caching.finalize_avatar_registering(self.avatar_id, self.smo_k_s, last_lmk)
+        if not source_info_caching.try_load_source_info(self.avatar_id):
+            last_lmk = None
+            for idx, rgb in enumerate(self.rgb_list):
+                info = self.source2info(rgb, last_lmk, **kwargs)
+                source_info_caching.register_frame_info(self.avatar_id, info)
+                last_lmk = info["lmk203"]
+                logger.debug(f"generated source info entry: {idx}")
+            source_info_caching.finalize_avatar_registering(self.avatar_id, self.smo_k_s, last_lmk)
 
     async def get_value_for_index(self, key: str, idx: int):
-        result = source_info_caching.get_value_for_index(self.avatar_id, key, idx)
+        result = await asyncio.to_thread(source_info_caching.get_value_for_index, self.avatar_id, key, idx)
         return result
 
     async def get_source_video_frame_count(self):

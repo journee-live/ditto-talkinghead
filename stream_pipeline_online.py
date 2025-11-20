@@ -299,7 +299,7 @@ class StreamSDK:
         }
         n_frames = self.template_n_frames if self.template_n_frames > 0 else self.N_d
 
-        loaded_from_cache = self.source_info_generator.register_avatar(
+        loaded_from_cache = await self.source_info_generator.register_avatar(
             self.smo_k_s,
             source_path,
             max_dim=self.max_size,
