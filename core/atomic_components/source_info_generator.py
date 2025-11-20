@@ -13,6 +13,8 @@ from spall_profiler import spall_profiler
 from .source2info import Source2Info
 from .loader import load_source_frames
 
+DITTO_ROOT = os.path.dirname(os.path.abspath(__file__))
+
 def _mean_filter(arr, k):
     n = arr.shape[0]
     half_k = k // 2
@@ -62,8 +64,8 @@ class Source_Info_List_Chunks:
         self.chunks.append(Source_Info_Chunk())
 
 class Source_Info_Cache_Entry:
-    def __init__(self):
-        self.lists: Dict[str, Source_Info_List_Chunks] = { # type: ignore
+    def __init__(self) -> None:
+        self.lists: Dict[str, Source_Info_List_Chunks] = {
             "x_s_info_lst": Source_Info_List_Chunks(),
             "f_s_lst": Source_Info_List_Chunks(),
             "M_c2o_lst": Source_Info_List_Chunks(),
@@ -71,14 +73,18 @@ class Source_Info_Cache_Entry:
             "eye_ball_lst": Source_Info_List_Chunks(),
         }
         self.total_frames_count = 0
-        self.last_lmk = None
         self.sc = None
         self.condition = threading.Condition()
 
 class SourceInfoCachingSystem:
-    def __init__(self):
+    def __init__(self) -> None:
         self.source_info_cache: Dict[str, Source_Info_Cache_Entry] = {}
         self.new_cache_condition = threading.Condition()
+        self.cache_dir: str = os.path.join(DITTO_ROOT, "source_info_cache")
+        self.cache_version: str = field(init=True, default="0.1.0")
+
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir, exist_ok=True)
 
     def get_avatar_id(self, source_path: str) -> str:
         avatar_id = "ditto_model." + source_path
@@ -89,16 +95,27 @@ class SourceInfoCachingSystem:
         avatar_id = self.get_avatar_id(source_path)
         result = avatar_id in self.source_info_cache
         return result
+    
+    @spall_profiler.profile()
+    def create_avatar_id_entry(self, avatar_id: str):
+        with self.new_cache_condition:
+            self.source_info_cache[avatar_id] = Source_Info_Cache_Entry()
+            self.new_cache_condition.notify()
+        
+    @spall_profiler.profile()
+    def wait_avatar_id_entry_creation(self, avatar_id: str):
+        while True:
+            with self.new_cache_condition:
+                if avatar_id in self.source_info_cache:
+                    break
+                self.new_cache_condition.wait()
 
     @spall_profiler.profile()
     def register_frame_info(
         self, avatar_id: str, source_info: Dict[str, Any]
     ):
         if avatar_id not in self.source_info_cache:
-            with self.new_cache_condition:
-                self.source_info_cache[avatar_id] = Source_Info_Cache_Entry()
-                self.new_cache_condition.notify()
-
+            self.create_avatar_id_entry(avatar_id)
             sc_f0 = source_info['x_s_info']['kp'].flatten()
             self.source_info_cache[avatar_id].sc = sc_f0
 
@@ -118,7 +135,11 @@ class SourceInfoCachingSystem:
         with entry.condition:
             entry.condition.notify()
     
-    def finalize_avatar_registering(self, avatar_id: str, smo_k_s: int, last_lmk: Any):
+    def serialize_list_chunks(self, avatar_id: str, key: str, lst: Source_Info_List_Chunks):
+        # TODO: implement this
+        return
+
+    def finalize_avatar_registering(self, avatar_id: str, smo_k_s: int):
         logger.debug(f"source info final setup")
         assert avatar_id in self.source_info_cache
 
@@ -134,19 +155,37 @@ class SourceInfoCachingSystem:
                 smo_k=smo_k_s
             )
 
-        self.source_info_cache[avatar_id].last_lmk = last_lmk
-        
-    def try_load_source_info(self, avatar_id: str) -> bool:
+        # NOTE: save to disk
+        for key in entry.lists:
+            lst = entry.lists[key]
+            self.serialize_list_chunks(avatar_id, key, lst)
+    
+    def get_source_info_dir(self, avatar_id: str):
+        result = os.path.join(self.cache_dir, avatar_id)
+        return result
+
+    def try_load_from_disk(self, avatar_id: str) -> bool:
         result = False
+        cache_path = self.get_source_info_dir(avatar_id)
+        if os.path.exists(cache_path):
+            result = True
+            keys = ["x_s_info_lst", "f_s_lst", "M_c2o_lst", "eye_open_lst", "eye_ball_lst"]
+        
         return result
 
     @spall_profiler.profile()
+    def try_load_source_info(self, avatar_id: str) -> bool:
+        result = False
+        # NOTE: try load from disk
+        if self.try_load_from_disk(avatar_id):
+            result = True
+                
+        return result
+
+        
+    @spall_profiler.profile()
     def get_value_for_index(self, avatar_id: str, key: str, idx: int):
-        while True:
-            with self.new_cache_condition:
-                if avatar_id in self.source_info_cache:
-                    break
-                self.new_cache_condition.wait()
+        self.wait_avatar_id_entry_creation(avatar_id)
 
         assert avatar_id in self.source_info_cache
         entry = self.source_info_cache[avatar_id]
@@ -216,6 +255,7 @@ class SourceInfoGenerator:
 
         return loaded_from_cache
     
+    @spall_profiler.profile()
     def generate_source_info(self, **kwargs):
         if not source_info_caching.try_load_source_info(self.avatar_id):
             last_lmk = None
@@ -224,7 +264,7 @@ class SourceInfoGenerator:
                 source_info_caching.register_frame_info(self.avatar_id, info)
                 last_lmk = info["lmk203"]
                 logger.debug(f"generated source info entry: {idx}")
-            source_info_caching.finalize_avatar_registering(self.avatar_id, self.smo_k_s, last_lmk)
+            source_info_caching.finalize_avatar_registering(self.avatar_id, self.smo_k_s)
 
     async def get_value_for_index(self, key: str, idx: int):
         result = await asyncio.to_thread(source_info_caching.get_value_for_index, self.avatar_id, key, idx)
