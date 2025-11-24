@@ -90,6 +90,8 @@ class SourceInfoCachingSystem:
         self.memory_cache_max_size: int = settings.MAX_CACHE_INFO_SIZE_GB * 1024 * 1024 * 1024
         self.disk_cache_max_size: int = settings.MAX_CACHE_INFO_DISK_SIZE_GB * 1024 * 1024 * 1024
         self.current_cache_size: int = 0
+        self.available_disk_chunk: Dict[int, Any] = {}
+        self.new_disk_chunk_condition = threading.Condition()
 
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir, exist_ok=True)
@@ -223,19 +225,32 @@ class SourceInfoCachingSystem:
 
     @spall_profiler.profile()
     def queue_chunk_disk_write_request(self, chunk: Dict[str, list], chunk_path: str):
-        # TODO(mouad): queue it for background worker thread
         joblib.dump(chunk, chunk_path, compress=0, protocol=pickle.HIGHEST_PROTOCOL)
 
     @spall_profiler.profile()
-    def queue_chunk_disk_load_request(self, chunk_path: str):
+    def load_cache_chunk(self, index: int, chunk_path: str):
+        result = joblib.load(chunk_path)
+        self.available_disk_chunk[index] = result
+        with self.new_disk_chunk_condition:
+            self.new_disk_chunk_condition.notify()
+    
+    @spall_profiler.profile()
+    def queue_chunk_disk_load_request(self, index: int, chunk_path: str):
         self.chunk_load_request.append(chunk_path)
+        self.workers.submit(self.load_cache_chunk, index=index, chunk_path=chunk_path)
 
     @spall_profiler.profile()
-    def queue_get_next_loaded_chunk(self) -> Dict[str, list]|None:
+    def queue_get_next_loaded_chunk(self, index: int) -> Dict[str, list]|None:
         result = None
-        if len(self.chunk_load_request) > 0:
-            chunk_path = self.chunk_load_request.popleft()
-            result = joblib.load(chunk_path)
+        while True:
+            if index in self.available_disk_chunk:
+                result = self.available_disk_chunk.pop(index)
+                break
+
+            with self.new_disk_chunk_condition:
+                if index not in self.available_disk_chunk:
+                    self.new_disk_chunk_condition.wait()
+
         return result
 
 
@@ -283,13 +298,15 @@ class SourceInfoCachingSystem:
         chunk_idx = 0
         while True:
             chunk_path = os.path.join(info_cache_dir, f"chunk-{chunk_idx}.pkl")
-            chunk_idx += 1
             if not os.path.exists(chunk_path):
                 break
-            self.queue_chunk_disk_load_request(chunk_path=chunk_path)
+            self.queue_chunk_disk_load_request(chunk_path=chunk_path, index=chunk_idx)
+            chunk_idx += 1
 
+        chunk_idx = 0
         while True:
-            chunk = self.queue_get_next_loaded_chunk()
+            chunk = self.queue_get_next_loaded_chunk(chunk_idx)
+            chunk_idx += 1
             if chunk is None:
                 break
 
