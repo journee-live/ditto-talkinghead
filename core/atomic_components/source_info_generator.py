@@ -85,7 +85,7 @@ class SourceInfoCachingSystem:
         self.cache_version: str = field(init=True, default="0.1.0")
         self.chunk_load_request: deque[str] = deque()
         self.workers = ThreadPoolExecutor(max_workers=4)
-        self.memory_cache_max_size: int = settings.MAX_CACHE_INFO_SIZE_GB
+        self.memory_cache_max_size: int = settings.MAX_CACHE_INFO_SIZE_GB * 1024 * 1024 * 1024
         self.current_cache_size: int = 0
 
         if not os.path.exists(self.cache_dir):
@@ -153,6 +153,7 @@ class SourceInfoCachingSystem:
                break
             random_key = random.choice(list(self.source_info_cache))
             if random_key != ignore_id:
+                logger.debug(f"evicting cache entry for id: {random_key}")
                 random_entry = self.source_info_cache[random_key]
                 self.current_cache_size -= random_entry.size
                 self.source_info_cache.pop(random_key)
