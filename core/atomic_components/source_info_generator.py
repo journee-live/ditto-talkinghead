@@ -150,6 +150,7 @@ class SourceInfoCachingSystem:
         return sys.getsizeof(obj)
 
     # TODO(mouad): ignore_id should be replaced by active ids
+    @spall_profiler.profile()
     def evict_cache_until_size(self, ignore_id: str, target_size: int):
         while self.current_cache_size > target_size:
             # TODO: better eviction strategy? right now we just pick at random
@@ -162,6 +163,17 @@ class SourceInfoCachingSystem:
                 self.current_cache_size -= random_entry.size
                 self.source_info_cache.pop(random_key)
 
+    @spall_profiler.profile()
+    def evict_cache_disk_entry(self, source_id: str):
+        entry_path = self.get_source_info_dir(source_id)
+        try:
+            shutil.rmtree(entry_path)
+        except PermissionError:
+            logger.debug(f"Permission issue, couldn't delete dir: {entry_path}")
+        except:
+            logger.debug(f"Couldn't delete dir: {entry_path}")
+
+    @spall_profiler.profile()
     def evict_cache_from_disk_until_size(self, ignore_id: str, target_size: int):
         disk_dir_size = self.get_directory_size(self.cache_dir)
         source_ids = [d for d in os.listdir(self.cache_dir) if os.path.isdir(os.path.join(self.cache_dir, d))]
@@ -174,12 +186,8 @@ class SourceInfoCachingSystem:
                 entry_path = self.get_source_info_dir(random_key)
                 entry_path_size = self.get_directory_size(entry_path)
                 disk_dir_size -= entry_path_size
-                try:
-                    shutil.rmtree(entry_path)
-                except PermissionError:
-                    logger.debug(f"Permission issue, couldn't delete dir: {entry_path}")
-                except:
-                    logger.debug(f"Couldn't delete dir: {entry_path}")
+                self.workers.submit(self.evict_cache_disk_entry, random_key)
+                source_ids.remove(random_key)
 
     @spall_profiler.profile()
     def register_frame_info(
@@ -231,6 +239,7 @@ class SourceInfoCachingSystem:
         return result
 
 
+    @spall_profiler.profile()
     def get_directory_size(self, path: str):
         return sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
     
@@ -264,7 +273,7 @@ class SourceInfoCachingSystem:
                 chunk[key] = entry.lists[key].data[offset:offset+MAX_FRAMES_PER_CHUNK]
 
             chunk_path = os.path.join(info_cache_dir, f"chunk-{i}.pkl")
-            self.queue_chunk_disk_write_request(chunk=chunk, chunk_path=chunk_path)
+            self.workers.submit(self.queue_chunk_disk_write_request, chunk=chunk, chunk_path=chunk_path)
 
         return
 
@@ -278,7 +287,7 @@ class SourceInfoCachingSystem:
             if not os.path.exists(chunk_path):
                 break
             self.queue_chunk_disk_load_request(chunk_path=chunk_path)
-        
+
         while True:
             chunk = self.queue_get_next_loaded_chunk()
             if chunk is None:
