@@ -1,5 +1,5 @@
 import threading
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 import time
 import numpy as np
 from loguru import logger
@@ -162,6 +162,7 @@ class SourceInfoCachingSystem:
         self, source_id: str, source_info: Dict[str, Any]
     ):
         data_size = self.estimate_size_bytes(source_info)
+        logger.info(f"registering new source info frame, size: {data_size}")
         if self.current_cache_size + data_size > self.memory_cache_max_size:
             self.evict_cache_until_size(
                 ignore_id=source_id,
