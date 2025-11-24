@@ -1,3 +1,4 @@
+import shutil
 import threading
 from typing import Any, Dict, List, Mapping
 import time
@@ -12,6 +13,7 @@ import sys
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import random
+from pathlib import Path
 
 from dataclasses import dataclass, field
 
@@ -86,6 +88,7 @@ class SourceInfoCachingSystem:
         self.chunk_load_request: deque[str] = deque()
         self.workers = ThreadPoolExecutor(max_workers=4)
         self.memory_cache_max_size: int = settings.MAX_CACHE_INFO_SIZE_GB * 1024 * 1024 * 1024
+        self.disk_cache_max_size: int = settings.MAX_CACHE_INFO_DISK_SIZE_GB * 1024 * 1024 * 1024
         self.current_cache_size: int = 0
 
         if not os.path.exists(self.cache_dir):
@@ -146,17 +149,37 @@ class SourceInfoCachingSystem:
         # Fallback
         return sys.getsizeof(obj)
 
+    # TODO(mouad): ignore_id should be replaced by active ids
     def evict_cache_until_size(self, ignore_id: str, target_size: int):
         while self.current_cache_size > target_size:
             # TODO: better eviction strategy? right now we just pick at random
-            if len(self.source_info_cache.keys()) == 0:
-               break
             random_key = random.choice(list(self.source_info_cache))
+            if len(self.source_info_cache.keys()) == 1 and random_key == ignore_id:
+               break
             if random_key != ignore_id:
                 logger.debug(f"evicting cache entry for id: {random_key}")
                 random_entry = self.source_info_cache[random_key]
                 self.current_cache_size -= random_entry.size
                 self.source_info_cache.pop(random_key)
+
+    def evict_cache_from_disk_until_size(self, ignore_id: str, target_size: int):
+        disk_dir_size = self.get_directory_size(self.cache_dir)
+        source_ids = [d for d in os.listdir(self.cache_dir) if os.path.isdir(os.path.join(self.cache_dir, d))]
+        while disk_dir_size > target_size:
+            random_key = random.choice(source_ids)
+            if len(source_ids) == 1 and random_key == ignore_id:
+               break
+            if random_key != ignore_id:
+                logger.debug(f"evicting disk cache entry for id: {random_key}")
+                entry_path = self.get_source_info_dir(random_key)
+                entry_path_size = self.get_directory_size(entry_path)
+                disk_dir_size -= entry_path_size
+                try:
+                    shutil.rmtree(entry_path)
+                except PermissionError:
+                    logger.debug(f"Permission issue, couldn't delete dir: {entry_path}")
+                except:
+                    logger.debug(f"Couldn't delete dir: {entry_path}")
 
     @spall_profiler.profile()
     def register_frame_info(
@@ -207,8 +230,20 @@ class SourceInfoCachingSystem:
             result = joblib.load(chunk_path)
         return result
 
+
+    def get_directory_size(self, path: str):
+        return sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
+    
+
     @spall_profiler.profile()
     def serialize_entry(self, source_id: str, entry: Source_Info_Cache_Entry):
+        disk_dir_size = self.get_directory_size(self.cache_dir)
+        if disk_dir_size + entry.size > self.disk_cache_max_size:
+            self.evict_cache_from_disk_until_size(
+                ignore_id=source_id, 
+                target_size=self.disk_cache_max_size - entry.size
+            )
+
         info_cache_dir = self.get_source_info_dir(source_id)
         if not os.path.exists(info_cache_dir):
             os.makedirs(info_cache_dir)
