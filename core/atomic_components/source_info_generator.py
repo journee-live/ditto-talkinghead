@@ -122,7 +122,7 @@ class SourceVideoCachingSystem:
     def __init__(self) -> None:
         self.video_frames: Dict[str, SourceVideoEntry] = {}
         self.current_size: int = 0
-        self.max_size: int = settings.MAX_CACHE_SOURCE_FRAMES_SIZE_GB
+        self.max_size: int = settings.MAX_CACHE_SOURCE_FRAMES_SIZE_GB * 1024 * 1024 * 1024
     
     def evict_until_size(self, target_size: int):
         while self.current_size > target_size:
@@ -470,6 +470,7 @@ class SourceInfoGenerator:
         self.is_image_flag = False
 
 
+    @spall_profiler.profile()
     async def register_avatar(
         self,
         smo_k_s: int,
