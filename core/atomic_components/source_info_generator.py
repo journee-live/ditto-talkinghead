@@ -79,6 +79,88 @@ class Source_Info_Cache_Entry:
         self.condition = threading.Condition()
         self.size: int = 0
 
+@spall_profiler.profile()
+def estimate_size_bytes(obj, seen: set[int] | None = None) -> int:
+    if seen is None:
+        seen = set()
+    oid = id(obj)
+    if oid in seen:
+        return 0
+    seen.add(oid)
+
+    # Numpy arrays
+    if isinstance(obj, np.ndarray):
+        return obj.nbytes
+
+    # Mappings (dict-like)
+    if isinstance(obj, Mapping):
+        size = sys.getsizeof(obj)
+        for k, v in obj.items():
+            size += estimate_size_bytes(k, seen)
+            size += estimate_size_bytes(v, seen)
+        return size
+
+    # Iterables (list/tuple/set) but not strings/bytes
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        size = sys.getsizeof(obj)
+        for item in obj:
+            size += estimate_size_bytes(item, seen)
+        return size
+
+    # Fallback
+    return sys.getsizeof(obj)
+
+@dataclass
+class SourceVideoEntry:
+    rgb_list: List[Any]
+    is_image_flag: bool
+    size: int
+    max_dim: int
+    n_frames: int
+
+class SourceVideoCachingSystem:
+    def __init__(self) -> None:
+        self.video_frames: Dict[str, SourceVideoEntry] = {}
+        self.current_size: int = 0
+        self.max_size: int = settings.MAX_CACHE_SOURCE_FRAMES_SIZE_GB
+    
+    def evict_until_size(self, target_size: int):
+        while self.current_size > target_size:
+            random_key = random.choice(list(self.video_frames))
+            logger.debug(f"evicting video cache entry for id: {random_key}")
+            random_entry = self.video_frames[random_key]
+            self.current_size -= random_entry.size
+            self.video_frames.pop(random_key)
+
+    async def get_source_rgb_list(self, id: str, max_dim: int, n_frames: int) -> tuple[List[Any], bool]:
+        result = None
+        if id in self.video_frames:
+            entry = self.video_frames[id]
+            if entry.max_dim == max_dim and entry.n_frames == n_frames:
+                result = (entry.rgb_list, entry.is_image_flag)
+
+        if result is None:
+            if id in self.video_frames:
+                entry = self.video_frames.pop(id)
+                self.current_size -= entry.size
+
+            rgb_list, is_image_flag = await asyncio.to_thread(load_source_frames, id, max_dim=max_dim, n_frames=n_frames)
+            rgb_list_size = estimate_size_bytes(rgb_list)
+            if self.current_size + rgb_list_size > self.max_size:
+                self.evict_until_size(target_size=self.max_size - rgb_list_size)
+
+            self.video_frames[id] = SourceVideoEntry(
+                rgb_list=rgb_list,
+                is_image_flag=is_image_flag,
+                max_dim=max_dim,
+                n_frames=n_frames,
+                size=rgb_list_size
+            )
+            result = (rgb_list, is_image_flag)
+            
+        return result
+
+
 class SourceInfoCachingSystem:
     def __init__(self) -> None:
         self.source_info_cache: Dict[str, Source_Info_Cache_Entry] = {}
@@ -120,36 +202,6 @@ class SourceInfoCachingSystem:
                     break
                 self.new_cache_condition.wait()
 
-    @spall_profiler.profile()
-    def estimate_size_bytes(self, obj, seen: set[int] | None = None) -> int:
-        if seen is None:
-            seen = set()
-        oid = id(obj)
-        if oid in seen:
-            return 0
-        seen.add(oid)
-
-        # Numpy arrays
-        if isinstance(obj, np.ndarray):
-            return obj.nbytes
-
-        # Mappings (dict-like)
-        if isinstance(obj, Mapping):
-            size = sys.getsizeof(obj)
-            for k, v in obj.items():
-                size += self.estimate_size_bytes(k, seen)
-                size += self.estimate_size_bytes(v, seen)
-            return size
-
-        # Iterables (list/tuple/set) but not strings/bytes
-        if isinstance(obj, (list, tuple, set, frozenset)):
-            size = sys.getsizeof(obj)
-            for item in obj:
-                size += self.estimate_size_bytes(item, seen)
-            return size
-
-        # Fallback
-        return sys.getsizeof(obj)
 
     # TODO(mouad): ignore_id should be replaced by active ids
     @spall_profiler.profile()
@@ -195,7 +247,7 @@ class SourceInfoCachingSystem:
     def register_frame_info(
         self, source_id: str, source_info: Dict[str, Any]
     ):
-        data_size = self.estimate_size_bytes(source_info)
+        data_size = estimate_size_bytes(source_info)
         logger.info(f"registering new source info frame, size: {data_size}")
         if self.current_cache_size + data_size > self.memory_cache_max_size:
             self.evict_cache_until_size(
@@ -392,6 +444,7 @@ class SourceInfoCachingSystem:
 
 
 source_info_caching = SourceInfoCachingSystem()
+source_video_caching = SourceVideoCachingSystem()
 
 class SourceInfoGenerator:
     def __init__(
@@ -428,8 +481,7 @@ class SourceInfoGenerator:
         self.smo_k_s = smo_k_s
         self.source_id = source_info_caching.get_source_id(source_path)
 
-        # TODO: avoid loading this all the time
-        self.rgb_list, self.is_image_flag = await asyncio.to_thread(load_source_frames, source_path, max_dim=max_dim, n_frames=n_frames)
+        self.rgb_list, self.is_image_flag = await source_video_caching.get_source_rgb_list(id=source_path, max_dim=max_dim, n_frames=n_frames)
 
         loaded_from_cache = source_info_caching.check_avatar_in_cache(source_path)
         if not loaded_from_cache:
