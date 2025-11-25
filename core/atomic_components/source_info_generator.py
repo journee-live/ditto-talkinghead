@@ -1,7 +1,6 @@
 import shutil
 import threading
 from typing import Any, Dict, List, Mapping
-import time
 import numpy as np
 from loguru import logger
 import asyncio
@@ -182,7 +181,7 @@ class SourceInfoCachingSystem:
         source_id = "ditto_model." + source_path
         return md5(source_id.encode()).hexdigest()
 
-    # Check if the avatar is in any level of the cache, and makes it available in faster caches
+    # Check if the avatar is in any memory cache
     def check_avatar_in_cache(self, source_path: str) -> bool:
         source_id = self.get_source_id(source_path)
         result = source_id in self.source_info_cache
@@ -202,6 +201,70 @@ class SourceInfoCachingSystem:
                     break
                 self.new_cache_condition.wait()
 
+    def clean_cache_from_disk(self, source_dir: str) -> None:
+        """
+        Safely delete a cache directory or file from the file system.
+
+        Args:
+            source_path (str): Path to the cache file or directory to delete.
+            source_dir (str): Path to the parent directory containing the cache file or directory.
+
+        Raises:
+            ValueError: If source path is invalid or empty
+            PermissionError: If insufficient permissions to delete
+            OSError: If deletion fails for other reasons
+
+        """
+        cache_dir = Path(source_dir).resolve()
+
+        try:
+            # Check if path exists
+            if not cache_dir.exists():
+                logger.info(f"Cache path does not exist, skipping: {cache_dir}")
+                return
+
+            # Check if we have permission to delete
+            if not os.access(cache_dir.parent, os.W_OK):
+                raise PermissionError(
+                    f"No write permission for parent directory: {cache_dir.parent}"
+                )
+
+            try:
+                # Attempt to remove directory and all contents
+                shutil.rmtree(cache_dir)
+                logger.info(f"Successfully deleted cache directory: {cache_dir}")
+            except OSError:
+                # If shutil.rmtree fails, try manual deletion for better error reporting
+                for root, dirs, files in os.walk(cache_dir, topdown=False):
+                    for file in files:
+                        os.unlink(os.path.join(root, file))
+                    for dir in dirs:
+                        os.rmdir(os.path.join(root, dir))
+                os.rmdir(cache_dir)
+                logger.info(
+                    f"Successfully deleted cache directory (manual): {cache_dir}"
+                )
+            else:
+                logger.warning(f"Unknown path type, skipping: {cache_dir}")
+
+        except PermissionError as e:
+            error_msg = f"Permission denied when deleting cache: {cache_dir} - {e!s}"
+            logger.error(error_msg)
+            raise PermissionError(error_msg) from e
+
+        except FileNotFoundError:
+            # File was deleted between existence check and deletion attempt
+            logger.info(f"Cache path was already deleted: {cache_dir}")
+
+        except OSError as e:
+            error_msg = f"Failed to delete cache path: {cache_dir} - {e!s}"
+            logger.error(error_msg)
+            raise OSError(error_msg) from e
+
+        except Exception as e:
+            error_msg = f"Unexpected error deleting cache: {cache_dir} - {e!s}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
 
     # TODO(mouad): ignore_id should be replaced by active ids
     @spall_profiler.profile()
@@ -221,11 +284,9 @@ class SourceInfoCachingSystem:
     def evict_cache_disk_entry(self, source_id: str):
         entry_path = self.get_source_info_dir(source_id)
         try:
-            shutil.rmtree(entry_path)
-        except PermissionError:
-            logger.debug(f"Permission issue, couldn't delete dir: {entry_path}")
+            self.clean_cache_from_disk(entry_path)
         except:
-            logger.debug(f"Couldn't delete dir: {entry_path}")
+            logger.debug(f"Couldn't delete cache disk entry: {entry_path}")
 
     @spall_profiler.profile()
     def evict_cache_from_disk_until_size(self, ignore_id: str, target_size: int):
