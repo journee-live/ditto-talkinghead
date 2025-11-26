@@ -132,6 +132,9 @@ class SourceInfoManager:
 
     def set_source_info(self, source_info: Dict[str, Any]):
         self.source_info = source_info
+        # Set total_frames_count from the source_info to avoid blocking in get_source_video_frame_count
+        if "x_s_info_lst" in source_info:
+            self.total_frames_count = len(source_info["x_s_info_lst"])
 
     def setup_source_info(
         self,
