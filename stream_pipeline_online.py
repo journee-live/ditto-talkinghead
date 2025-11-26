@@ -447,20 +447,50 @@ class StreamSDK:
             self.stop_event.set()
 
     def _decode_f3d_worker(self):
+        BATCH_SIZE = 10
+        BATCH_TIMEOUT = 0.01  # Short timeout when collecting batch items
+        
         while not self.stop_event.is_set():
-            try:
-                item = self.decode_f3d_queue.get(timeout=0.05)
-            except queue.Empty:
+            batch = []
+            batch_metadata = []  # Store (frame_idx, gen_frame_idx) for each item
+            
+            # Collect up to BATCH_SIZE items
+            while len(batch) < BATCH_SIZE:
+                try:
+                    # Use shorter timeout when we already have items in batch
+                    timeout = BATCH_TIMEOUT if batch else 0.05
+                    item = self.decode_f3d_queue.get(timeout=timeout)
+                except queue.Empty:
+                    # If we have items, process them; otherwise continue waiting
+                    if batch:
+                        break
+                    continue
+                
+                if item is None:
+                    self.decode_f3d_queue.task_done()
+                    continue
+                
+                frame_idx, f_3d, gen_frame_idx = item
+                batch.append(f_3d)
+                batch_metadata.append((frame_idx, gen_frame_idx))
+            
+            if not batch:
                 continue
-
-            if item is None:
+            
+            # Process batch
+            if len(batch) == 1:
+                # Single item - use original method
+                render_img = self.decode_f3d(batch[0])
+                frame_idx, gen_frame_idx = batch_metadata[0]
+                self.putback_queue.put([frame_idx, render_img, gen_frame_idx])
                 self.decode_f3d_queue.task_done()
-                continue
-
-            frame_idx, f_3d, gen_frame_idx = item
-            render_img = self.decode_f3d(f_3d)
-            self.putback_queue.put([frame_idx, render_img, gen_frame_idx])
-            self.decode_f3d_queue.task_done()
+            else:
+                # Batch processing
+                render_imgs = self.decode_f3d.decode_batch(batch)
+                for i, render_img in enumerate(render_imgs):
+                    frame_idx, gen_frame_idx = batch_metadata[i]
+                    self.putback_queue.put([frame_idx, render_img, gen_frame_idx])
+                    self.decode_f3d_queue.task_done()
 
     def warp_f3d_worker(self):
         try:
