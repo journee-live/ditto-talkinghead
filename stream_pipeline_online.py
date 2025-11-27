@@ -498,8 +498,9 @@ class StreamSDK:
 
     async def _motion_stitch_worker(self):
         num_frames_stitched = 0
+        last_finished_task_ts = 0
         while not self.stop_event.is_set():
-            try:
+            try:                  
                 item = self.motion_stitch_queue.get(timeout=0.05)
                 # Clear the flag when we have work to do
             except queue.Empty:
@@ -509,6 +510,10 @@ class StreamSDK:
                 self.motion_stitch_queue.task_done()
                 continue
 
+            if self.motion_stitch_queue.qsize() > 50:
+                logger.warning(f"Motion stitch took too long to process queue_size: {self.motion_stitch_queue.qsize()} items, last_started_delta: {time.perf_counter() - last_started_task_ts}, last_finished_delta: {time.perf_counter() - last_finished_task_ts}")
+
+            last_started_task_ts = time.perf_counter()
             frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx = item
             # source_info["x_s_info_lst"][frame_idx]
             x_s_info = await self.source_info_manager.get_source_info_value_for_index("x_s_info_lst", frame_idx)
@@ -523,6 +528,7 @@ class StreamSDK:
                 self.motion_stitch_out_queue.put([x_d_info, frame_idx, gen_frame_idx])
             self.warp_f3d_queue.put([frame_idx, x_s, x_d, gen_frame_idx])
             self.motion_stitch_queue.task_done()
+            last_finished_task_ts = time.perf_counter()
 
     def hubert_worker(self):
         try:

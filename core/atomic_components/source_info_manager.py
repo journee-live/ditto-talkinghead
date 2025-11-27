@@ -117,6 +117,19 @@ class SourceInfoManager:
         while self.total_frames_count == 0:
             time.sleep(0.001)
 
+    def _wait_for_all_frames_generated(self):
+        """Block until all source_info frames are generated."""
+        # First wait for total_frames_count to be set
+        while self.total_frames_count == 0:
+            time.sleep(0.001)
+        # Then wait for all frames to be generated
+        while len(self.source_info.get("x_s_info_lst", [])) < self.total_frames_count:
+            time.sleep(0.01)
+
+    async def wait_for_all_frames_generated(self):
+        """Async wait until all source_info frames are generated."""
+        await asyncio.to_thread(self._wait_for_all_frames_generated)
+
     async def get_source_video_frame_count(self):
         await asyncio.to_thread(self.wait_for_loaded_source)
         return self.total_frames_count
