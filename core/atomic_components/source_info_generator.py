@@ -162,6 +162,7 @@ class SourceVideoCachingSystem:
 
 class SourceInfoCachingSystem:
     def __init__(self) -> None:
+        self.active_source_ids: set[str] = set()
         self.source_info_cache: Dict[str, Source_Info_Cache_Entry] = {}
         self.new_cache_condition = threading.Condition()
         self.cache_dir: str = os.path.join(DITTO_ROOT, "source_info_cache")
@@ -180,6 +181,13 @@ class SourceInfoCachingSystem:
     def get_source_id(self, source_path: str) -> str:
         source_id = "ditto_model." + source_path
         return md5(source_id.encode()).hexdigest()
+
+    def set_active_id(self, source_id: str):
+        self.active_source_ids.add(source_id)
+
+    def remove_active_id(self, source_id: str):
+        if source_id in self.active_source_ids:
+            self.active_source_ids.remove(source_id)
 
     # Check if the avatar is in any memory cache
     def check_avatar_in_cache(self, source_path: str) -> bool:
@@ -266,15 +274,20 @@ class SourceInfoCachingSystem:
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
-    # TODO(mouad): ignore_id should be replaced by active ids
     @spall_profiler.profile()
-    def evict_cache_until_size(self, ignore_id: str, target_size: int):
+    def evict_cache_until_size(self, target_size: int):
         while self.current_cache_size > target_size:
             # TODO: better eviction strategy? right now we just pick at random
             random_key = random.choice(list(self.source_info_cache))
-            if len(self.source_info_cache.keys()) == 1 and random_key == ignore_id:
-               break
-            if random_key != ignore_id:
+            # check if we should stop
+            should_stop = True
+            for key in self.source_info_cache:
+                if key not in self.active_source_ids:
+                    should_stop = False
+                    break
+            if should_stop:
+                break
+            if random_key not in self.active_source_ids:
                 logger.debug(f"evicting cache entry for id: {random_key}")
                 random_entry = self.source_info_cache[random_key]
                 self.current_cache_size -= random_entry.size
@@ -289,14 +302,19 @@ class SourceInfoCachingSystem:
             logger.debug(f"Couldn't delete cache disk entry: {entry_path}")
 
     @spall_profiler.profile()
-    def evict_cache_from_disk_until_size(self, ignore_id: str, target_size: int):
+    def evict_cache_from_disk_until_size(self, target_size: int):
         disk_dir_size = self.get_directory_size(self.cache_dir)
         source_ids = [d for d in os.listdir(self.cache_dir) if os.path.isdir(os.path.join(self.cache_dir, d))]
         while disk_dir_size > target_size:
             random_key = random.choice(source_ids)
-            if len(source_ids) == 1 and random_key == ignore_id:
-               break
-            if random_key != ignore_id:
+            should_stop = True
+            for key in source_ids:
+                if key not in self.active_source_ids:
+                    should_stop = False
+                    break
+            if should_stop:
+                break
+            if random_key not in self.active_source_ids:
                 logger.debug(f"evicting disk cache entry for id: {random_key}")
                 entry_path = self.get_source_info_dir(random_key)
                 entry_path_size = self.get_directory_size(entry_path)
@@ -312,7 +330,6 @@ class SourceInfoCachingSystem:
         logger.info(f"registering new source info frame, size: {data_size}")
         if self.current_cache_size + data_size > self.memory_cache_max_size:
             self.evict_cache_until_size(
-                ignore_id=source_id,
                 target_size=self.memory_cache_max_size - data_size
             )
 
@@ -377,7 +394,6 @@ class SourceInfoCachingSystem:
         disk_dir_size = self.get_directory_size(self.cache_dir)
         if disk_dir_size + entry.size > self.disk_cache_max_size:
             self.evict_cache_from_disk_until_size(
-                ignore_id=source_id, 
                 target_size=self.disk_cache_max_size - entry.size
             )
 
@@ -542,6 +558,7 @@ class SourceInfoGenerator:
     ) -> bool:
         self.smo_k_s = smo_k_s
         self.source_id = source_info_caching.get_source_id(source_path)
+        source_info_caching.set_active_id(self.source_id)
 
         self.rgb_list, self.is_image_flag = await source_video_caching.get_source_rgb_list(id=source_path, max_dim=max_dim, n_frames=n_frames)
 
@@ -552,6 +569,9 @@ class SourceInfoGenerator:
             #self.generate_source_info(kwargs=kwargs)
 
         return loaded_from_cache
+    
+    def unregister_avatar(self):
+        source_info_caching.remove_active_id(self.source_id)
 
     @spall_profiler.profile()
     def generate_source_info(self, **kwargs):

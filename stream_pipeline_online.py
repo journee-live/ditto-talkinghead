@@ -815,6 +815,7 @@ class StreamSDK:
 
     def reset(self):
         logger.info("reset")
+        self.source_info_generator.unregister_avatar()
         self.fps_tracker.stop()
         self.motion_stitch.reset_state()
         self.audio2motion.reset_state()
