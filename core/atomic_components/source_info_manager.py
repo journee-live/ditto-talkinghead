@@ -5,6 +5,8 @@ import numpy as np
 from loguru import logger
 import asyncio
 
+from spall_profiler import spall_profiler
+
 from .loader import load_source_frames
 from .source2info import Source2Info
 from ..utils.exceptions import UnsupportedSourceException
@@ -71,12 +73,11 @@ class SourceInfoManager:
             "eye_open_lst": [],
             "eye_ball_lst": [],
         }
-        self.total_frames_count = 0
         self.cancel_regsiter_thread = threading.Event()
-        self.pushed_entry_event = threading.Event()
         self.smo_k_s: int = 0
         self.source_gen_mutex = threading.Lock()
         self.register_thread: threading.Thread|None = None
+        self.condition = threading.Condition()
 
     def reset_source_info(self):
         self.source_info = {
@@ -88,11 +89,14 @@ class SourceInfoManager:
         }
         
 
+    @spall_profiler.profile()
     def wait_until_index_ready(self, key: str, index: int):
+        logger.debug(f"waiting for index: {index} for key: {key}, current value has {len(self.source_info[key])} entries")
         while len(self.source_info[key]) <= index:
-            self.pushed_entry_event.wait()
-            self.pushed_entry_event.clear()
+            with self.condition:
+                self.condition.wait()
 
+    @spall_profiler.profile()
     async def get_source_info_value_for_indices_list(
         self,
         key: str,
@@ -102,7 +106,8 @@ class SourceInfoManager:
         with self.source_gen_mutex:
             result = self.source_info[key][indices]
         return result
-            
+
+    @spall_profiler.profile()
     async def get_source_info_value_for_index(
         self,
         key: str,
@@ -113,15 +118,18 @@ class SourceInfoManager:
             result = self.source_info[key][index]
         return result
 
-    def wait_for_loaded_source(self):
-        while self.total_frames_count == 0:
-            time.sleep(0.001)
-
+    @spall_profiler.profile()
     async def get_source_video_frame_count(self):
-        await asyncio.to_thread(self.wait_for_loaded_source)
-        return self.total_frames_count
+        if "img_rgb_lst" not in self.source_info:
+            rgb_list = await asyncio.to_thread(self.get_source_info_component, "img_rgb_lst")
+        else:
+            rgb_list = self.source_info["img_rgb_lst"]
+            
+        return len(rgb_list)
 
+    @spall_profiler.profile()
     def get_source_info_component(self, key: str):
+        logger.debug(f"getting component {key} from source info")
         result = None
         while result == None:
             time.sleep(0.001)
@@ -130,40 +138,47 @@ class SourceInfoManager:
         return result
         
 
+    @spall_profiler.profile()
     def set_source_info(self, source_info: Dict[str, Any]):
         self.source_info = source_info
 
+    @spall_profiler.profile()
     def setup_source_info(
         self,
         rgb_frames: List[np.ndarray],
         is_image_flag: bool,
         **kwargs
     ):
+        logger.debug("started generating source info")
         with self.source_gen_mutex:
             self.source_info["is_image_flag"] = is_image_flag
             self.source_info["img_rgb_lst"]   = rgb_frames
 
         keys = ["x_s_info", "f_s", "M_c2o", "eye_open", "eye_ball"]
         last_lmk = None
-        for rgb in rgb_frames:
-            if self.cancel_regsiter_thread.is_set():
-                return
+        for idx, rgb in enumerate(rgb_frames):
+            with spall_profiler.profile_block("source info generation loop"):
+                if self.cancel_regsiter_thread.is_set():
+                    return
 
-            info = self.source2info(rgb, last_lmk, **kwargs)
-            with self.source_gen_mutex:
-                for k in keys:
-                    self.source_info[f"{k}_lst"].append(info[k])
-
-            if last_lmk is None:
-                # first frame
-                sc_f0 = self.source_info['x_s_info_lst'][0]['kp'].flatten()
+                info = self.source2info(rgb, last_lmk, **kwargs)
                 with self.source_gen_mutex:
-                    self.source_info["sc"] = sc_f0
+                    for k in keys:
+                        self.source_info[f"{k}_lst"].append(info[k])
 
-            last_lmk = info["lmk203"]
-            self.pushed_entry_event.set()
+                if last_lmk is None:
+                    # first frame
+                    sc_f0 = self.source_info['x_s_info_lst'][0]['kp'].flatten()
+                    with self.source_gen_mutex:
+                        self.source_info["sc"] = sc_f0
+
+                last_lmk = info["lmk203"]
+                with self.condition:
+                    self.condition.notify()
+                logger.debug(f"generated source info entry: {idx}")
 
         # final setup
+        logger.debug(f"source info final setup")
         with self.source_gen_mutex:
             self.source_info["eye_open_lst"] = np.concatenate(self.source_info["eye_open_lst"], 0)  # [n, 2]
             self.source_info["eye_ball_lst"] = np.concatenate(self.source_info["eye_ball_lst"], 0)  # [n, 2]
@@ -171,8 +186,10 @@ class SourceInfoManager:
             smooth_x_s_info_lst(
                 x_s_info_list=self.source_info["x_s_info_lst"],
                 smo_k=self.smo_k_s)
+        logger.debug(f"source info generation done")
 
 
+    @spall_profiler.profile()
     def register(
         self,
         source_path,  # image | video
@@ -189,20 +206,25 @@ class SourceInfoManager:
         """
         load_start_time = time.perf_counter()
         rgb_list, is_image_flag = load_source_frames(source_path, max_dim=max_dim, n_frames=n_frames)
-        self.total_frames_count = len(rgb_list)
         load_end_time = time.perf_counter()
         logger.info(f"source video loading took: {load_end_time - load_start_time}s")
         self.setup_source_info(rgb_list, is_image_flag, **kwargs)
 
+    @spall_profiler.profile("SourceInfoManager")
     async def __call__(self, *args, **kwargs):
-        if self.register_thread is not None:
-            self.cancel_regsiter_thread.set()
-            self.register_thread.join()
+        self.cancel_registering()
 
-        self.cancel_regsiter_thread.clear()
         self.reset_source_info()
         self.register_thread = threading.Thread(target=self.register, args=args, kwargs=kwargs)
         self.register_thread.start()
-        #return await asyncio.to_thread(self.register, *args, **kwargs)
+
+    @spall_profiler.profile()
+    def cancel_registering(self):
+        if self.register_thread is not None:
+            self.cancel_regsiter_thread.set()
+            self.register_thread.join()
+            self.register_thread = None
+
+        self.cancel_regsiter_thread.clear()
 
     

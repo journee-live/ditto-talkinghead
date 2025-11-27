@@ -11,6 +11,7 @@ from ..models.motion_extractor import MotionExtractor
 from ..utils.crop import crop_image
 from ..utils.eye_info import EyeAttrUtilsByMP
 
+from spall_profiler import spall_profiler
 
 """
 insightface_det_cfg = {
@@ -64,6 +65,7 @@ class Source2Info:
         self.appearance_extractor = AppearanceExtractor(**appearance_extractor_cfg)
         self.motion_extractor = MotionExtractor(**motion_extractor_cfg)
 
+    @spall_profiler.profile()
     def _crop(self, img, last_lmk=None, **kwargs):
         # img_rgb -> det->landmark106->landmark203->crop
 
@@ -103,21 +105,25 @@ class Source2Info:
         return img_crop, M_c2o, lmk203
     
     @staticmethod
+    @spall_profiler.profile()
     def _img_crop_to_bchw256(img_crop):
         rgb_256 = cv2.resize(img_crop, (256, 256), interpolation=cv2.INTER_AREA)
         rgb_256_bchw = (rgb_256.astype(np.float32) / 255.0)[None].transpose(0, 3, 1, 2)
         return rgb_256_bchw
 
+    @spall_profiler.profile()
     def _get_kp_info(self, img):
         # rgb_256_bchw_norm01
         kp_info = self.motion_extractor(img)
         return kp_info
 
+    @spall_profiler.profile()
     def _get_f3d(self, img):
         # rgb_256_bchw_norm01
         fs = self.appearance_extractor(img)
         return fs
 
+    @spall_profiler.profile()
     def _get_eye_info(self, img):
         # rgb uint8
         lmk478 = self.landmark478(img)  # [1, 478, 3]
@@ -126,6 +132,7 @@ class Source2Info:
         lr_ball = attr.LR_ball_move().reshape(-1, 6)   # [1, 3, 2] -> [1, 6]
         return [lr_open, lr_ball]
 
+    @spall_profiler.profile("Source2Info")
     def __call__(self, img, last_lmk=None, **kwargs):
         """
         img: rgb, uint8

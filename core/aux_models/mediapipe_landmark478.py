@@ -4,6 +4,7 @@ import numpy as np
 from ..utils.load_model import load_model
 from .blaze_face import BlazeFace
 from .face_mesh import FaceMesh
+from spall_profiler import spall_profiler
 
 
 class SizeMode(Enum):
@@ -107,6 +108,7 @@ class Landmark478:
         mesh = mesh / (image.shape[1], image.shape[0], image.shape[1])
         return mesh
 
+    @spall_profiler.profile("Landmark478")
     def __call__(self, image):
         if self.model_type == "ori":
             det = self.model.detect_from_npimage(image.copy())

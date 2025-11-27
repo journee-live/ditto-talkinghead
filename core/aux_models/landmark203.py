@@ -1,6 +1,7 @@
 import numpy as np
 from ..utils.load_model import load_model
 
+from spall_profiler import spall_profiler
 
 def _transform_pts(pts, M):
     """ conduct similarity or affine transformation to the pts
@@ -48,6 +49,7 @@ class Landmark203:
 
         return lmk
     
+    @spall_profiler.profile("Landmark203")
     def __call__(self, img_crop_rgb, M_c2o=None):
         if self.model_type == "ori":
             lmk = self.model.run(img_crop_rgb, M_c2o)
