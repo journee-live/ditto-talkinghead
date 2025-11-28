@@ -2,8 +2,6 @@ import numpy as np
 import torch
 from ..utils.load_model import load_model
 
-from spall_profiler import spall_profiler
-
 class MotionExtractor:
     def __init__(self, model_path, device="cuda"):
         kwargs = {
@@ -22,7 +20,6 @@ class MotionExtractor:
             "kp",
         ]
 
-    @spall_profiler.profile("MotionExtractor")
     def __call__(self, image):
         """
         image: np.ndarray, shape (1, 3, 256, 256), RGB, 0-1

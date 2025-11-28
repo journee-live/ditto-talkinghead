@@ -3,7 +3,6 @@ import numpy as np
 import cv2
 
 from ..utils.load_model import load_model
-from spall_profiler import spall_profiler
 
 
 def distance2bbox(points, distance, max_shape=None):
@@ -236,7 +235,6 @@ class InsightFaceDet:
 
         return keep
 
-    @spall_profiler.profile("InsightFaceDet")
     def __call__(self, img, **kwargs):
         if self.model_type == "ori":
             det, kpss = self.model.detect(img, **kwargs)

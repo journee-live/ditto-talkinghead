@@ -16,7 +16,6 @@ from pathlib import Path
 
 from dataclasses import dataclass, field
 
-from spall_profiler import spall_profiler
 from .source2info import Source2Info
 from .loader import load_source_frames
 
@@ -78,7 +77,6 @@ class Source_Info_Cache_Entry:
         self.condition = threading.Condition()
         self.size: int = 0
 
-@spall_profiler.profile()
 def estimate_size_bytes(obj, seen: set[int] | None = None) -> int:
     if seen is None:
         seen = set()
@@ -195,13 +193,11 @@ class SourceInfoCachingSystem:
         result = source_id in self.source_info_cache
         return result
 
-    @spall_profiler.profile()
     def create_source_id_entry(self, source_id: str):
         with self.new_cache_condition:
             self.source_info_cache[source_id] = Source_Info_Cache_Entry()
             self.new_cache_condition.notify()
 
-    @spall_profiler.profile()
     def wait_source_id_entry_creation(self, source_id: str):
         while True:
             with self.new_cache_condition:
@@ -274,7 +270,6 @@ class SourceInfoCachingSystem:
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
-    @spall_profiler.profile()
     def evict_cache_until_size(self, target_size: int):
         while self.current_cache_size > target_size:
             # TODO: better eviction strategy? right now we just pick at random
@@ -293,7 +288,6 @@ class SourceInfoCachingSystem:
                 self.current_cache_size -= random_entry.size
                 self.source_info_cache.pop(random_key)
 
-    @spall_profiler.profile()
     def evict_cache_disk_entry(self, source_id: str):
         entry_path = self.get_source_info_dir(source_id)
         try:
@@ -301,7 +295,6 @@ class SourceInfoCachingSystem:
         except:
             logger.debug(f"Couldn't delete cache disk entry: {entry_path}")
 
-    @spall_profiler.profile()
     def evict_cache_from_disk_until_size(self, target_size: int):
         disk_dir_size = self.get_directory_size(self.cache_dir)
         source_ids = [d for d in os.listdir(self.cache_dir) if os.path.isdir(os.path.join(self.cache_dir, d))]
@@ -322,7 +315,6 @@ class SourceInfoCachingSystem:
                 self.workers.submit(self.evict_cache_disk_entry, random_key)
                 source_ids.remove(random_key)
 
-    @spall_profiler.profile()
     def register_frame_info(
         self, source_id: str, source_info: Dict[str, Any]
     ):
@@ -353,23 +345,19 @@ class SourceInfoCachingSystem:
         with entry.condition:
             entry.condition.notify()
 
-    @spall_profiler.profile()
     def queue_chunk_disk_write_request(self, chunk: Dict[str, list], chunk_path: str):
         joblib.dump(chunk, chunk_path, compress=0, protocol=pickle.HIGHEST_PROTOCOL)
 
-    @spall_profiler.profile()
     def load_cache_chunk(self, index: int, chunk_path: str):
         result = joblib.load(chunk_path)
         self.available_disk_chunk[index] = result
         with self.new_disk_chunk_condition:
             self.new_disk_chunk_condition.notify()
     
-    @spall_profiler.profile()
     def queue_chunk_disk_load_request(self, index: int, chunk_path: str):
         self.chunk_load_request.append(chunk_path)
         self.workers.submit(self.load_cache_chunk, index=index, chunk_path=chunk_path)
 
-    @spall_profiler.profile()
     def queue_get_next_loaded_chunk(self, index: int) -> Dict[str, list]|None:
         result = None
         while True:
@@ -384,12 +372,10 @@ class SourceInfoCachingSystem:
         return result
 
 
-    @spall_profiler.profile()
     def get_directory_size(self, path: str):
         return sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
     
 
-    @spall_profiler.profile()
     def serialize_entry(self, source_id: str, entry: Source_Info_Cache_Entry):
         disk_dir_size = self.get_directory_size(self.cache_dir)
         if disk_dir_size + entry.size > self.disk_cache_max_size:
@@ -421,7 +407,6 @@ class SourceInfoCachingSystem:
 
         return
 
-    @spall_profiler.profile()
     def load_and_deserialize(self, source_id: str, info_cache_dir: str):
         keys = ["x_s_info", "f_s", "M_c2o", "eye_open", "eye_ball"]
         chunk_idx = 0
@@ -447,7 +432,6 @@ class SourceInfoCachingSystem:
                     source_info[k] = chunk[f"{k}_lst"][idx]
                 self.register_frame_info(source_id=source_id, source_info=source_info)
 
-    @spall_profiler.profile()
     def try_load_from_disk(self, source_id: str, smo_k_s: int) -> bool:
         result = False
         info_cache_dir = self.get_source_info_dir(source_id)
@@ -462,7 +446,6 @@ class SourceInfoCachingSystem:
             self.post_process_source_data(source_id, smo_k_s)
         return result
 
-    @spall_profiler.profile()
     def post_process_source_data(self, source_id: str, smo_k_s: int):
         assert source_id in self.source_info_cache
         entry = self.source_info_cache[source_id]
@@ -491,7 +474,6 @@ class SourceInfoCachingSystem:
         return result
 
 
-    @spall_profiler.profile()
     def try_load_source_info(self, source_id: str, smo_k_s: int) -> bool:
         result = False
         # NOTE: try load from disk
@@ -500,7 +482,6 @@ class SourceInfoCachingSystem:
                 
         return result
 
-    @spall_profiler.profile()
     def get_value_for_index(self, source_id: str, key: str, idx: int):
         self.wait_source_id_entry_creation(source_id)
 
@@ -547,7 +528,6 @@ class SourceInfoGenerator:
         self.is_image_flag = False
 
 
-    @spall_profiler.profile()
     async def register_avatar(
         self,
         smo_k_s: int,
@@ -573,7 +553,6 @@ class SourceInfoGenerator:
     def unregister_avatar(self):
         source_info_caching.remove_active_id(self.source_id)
 
-    @spall_profiler.profile()
     def generate_source_info(self, **kwargs):
         if not source_info_caching.try_load_source_info(self.source_id, self.smo_k_s):
             last_lmk = None

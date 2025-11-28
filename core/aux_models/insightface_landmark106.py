@@ -5,8 +5,6 @@ import cv2
 from skimage import transform as trans
 
 from ..utils.load_model import load_model
-from spall_profiler import spall_profiler
-
 
 def transform(data, center, output_size, scale, rotation):
     scale_ratio = scale
@@ -92,7 +90,6 @@ class Landmark106:
         pred = trans_points2d(pred, IM)
         return pred
 
-    @spall_profiler.profile("Landmark106")
     def __call__(self, img, bbox):
         if self.model_type == "ori":
             pred = self.model.get(img, bbox)

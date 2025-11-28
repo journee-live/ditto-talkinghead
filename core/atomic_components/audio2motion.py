@@ -1,6 +1,5 @@
 import numpy as np
 
-from spall_profiler import spall_profiler
 from ..models.lmdm import LMDM
 
 """
@@ -71,7 +70,6 @@ class Audio2Motion:
         # Initialize storage for keypoint condition history
         self.kp_cond_history = []
 
-    @spall_profiler.profile()
     def setup(
         self,
         x_s_info,
@@ -205,7 +203,6 @@ class Audio2Motion:
         return res_kp_seq
 
     # @profile("Audio2Motion Forward")
-    @spall_profiler.profile("audio2motion")
     def __call__(self, aud_cond, res_kp_seq=None):
         """
         aud_cond: (1, seq_frames, dim)
