@@ -48,7 +48,7 @@ class PutBack:
         self.result_buffer = None
         # Allow override via environment variable (default 0.3 for subtle sharpening)
         if sharpen_amount is None:
-            sharpen_amount = float(os.environ.get("DITTO_SPEECH_SHARPEN_AMOUNT", "0.3"))
+            sharpen_amount = float(os.environ.get("DITTO_SPEECH_SHARPEN_AMOUNT", "0.0"))
         self.sharpen_amount = sharpen_amount
         
         # Pre-compute sharpening kernel (unsharp mask style)
@@ -75,6 +75,7 @@ class PutBack:
         # Use Cython implementation for blending
         blend_images_cy(mask_warped, frame_warped, frame_rgb, self.result_buffer)
         
+        # TODO Improve performance since it tanks fps!!
         # Apply subtle sharpening to counteract blur from blending
         if self.sharpen_amount > 0:
             # Blend between original and sharpened result
