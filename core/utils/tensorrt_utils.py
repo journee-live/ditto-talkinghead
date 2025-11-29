@@ -94,6 +94,7 @@ class TRTWrapper:
         self,
         trt_file: str,
         plugin_file_list: list = [],
+        high_priority: bool = False,
     ) -> None:
         # Load custom plugins
         for plugin_file in plugin_file_list:
@@ -117,7 +118,13 @@ class TRTWrapper:
         self._n_output = None
         
         # Create dedicated CUDA stream for this model
-        _, self._cuda_stream = cudart.cudaStreamCreate()
+        if high_priority:
+            _, lowest, highest = cudart.cudaDeviceGetStreamPriorityRange()
+            _, self._cuda_stream = cudart.cudaStreamCreateWithPriority(
+                cudart.cudaStreamNonBlocking, highest
+            )
+        else:
+            _, self._cuda_stream = cudart.cudaStreamCreate()
         return
 
     def _init_tensor_info(self):
