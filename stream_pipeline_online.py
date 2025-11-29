@@ -85,7 +85,9 @@ class StreamSDK:
         self.audio2motion = Audio2Motion(lmdm_cfg)
         self.motion_stitch = MotionStitch(stitch_network_cfg)
         self.warp_f3d = WarpF3D(warp_network_cfg)
+        
         self.decode_f3d = DecodeF3D(decoder_cfg)
+        
         self.putback = PutBack()
         self.chunk_size = chunk_size
         self.overlap_size = self.chunk_size[0] * self.BYTES_PER_FRAME
@@ -569,6 +571,8 @@ class StreamSDK:
             # Put the processed features in the queue
             self.audio2motion_queue.put((item, chunk_idx))
             self.hubert_features_queue.task_done()
+            if self.audio2motion_queue.qsize() > 5:
+                time.sleep(0.05)
             chunk_idx += 1
 
     def audio2motion_worker(self):
