@@ -94,6 +94,7 @@ class TRTWrapper:
         self,
         trt_file: str,
         plugin_file_list: list = [],
+        high_priority: bool = False,
     ) -> None:
         # Load custom plugins
         for plugin_file in plugin_file_list:
@@ -108,10 +109,61 @@ class TRTWrapper:
         self.buffer = OrderedDict()
         self.output_allocator_map = OrderedDict()
         self.context = self.engine.create_execution_context()
+        
+        # Cache for buffer reuse - tracks allocated shapes to avoid reallocation
+        self._cached_input_shapes = {}
+        self._buffers_initialized = False
+        self._tensor_name_list = None
+        self._n_input = None
+        self._n_output = None
+        
+        # Create dedicated CUDA stream for this model
+        if high_priority:
+            _, lowest, highest = cudart.cudaDeviceGetStreamPriorityRange()
+            _, self._cuda_stream = cudart.cudaStreamCreateWithPriority(
+                cudart.cudaStreamNonBlocking, highest
+            )
+        else:
+            _, self._cuda_stream = cudart.cudaStreamCreate()
         return
 
+    def _init_tensor_info(self):
+        """Initialize tensor info once (cached)."""
+        if self._tensor_name_list is not None:
+            return
+        self._tensor_name_list = [
+            self.engine.get_tensor_name(i) for i in range(self.engine.num_io_tensors)
+        ]
+        self._n_input = sum(
+            [
+                self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT
+                for name in self._tensor_name_list
+            ]
+        )
+        self._n_output = self.engine.num_io_tensors - self._n_input
+
+    def _shapes_match(self, input_data: dict) -> bool:
+        """Check if input shapes match cached shapes."""
+        if not self._buffers_initialized:
+            return False
+        for name, data in input_data.items():
+            cached_shape = self._cached_input_shapes.get(name)
+            if cached_shape is None or cached_shape != data.shape:
+                return False
+        return True
+
     def setup(self, input_data: dict = {}) -> None:
-        # with profile_block(f"{self.model}::setup"):
+        # Initialize tensor info once
+        self._init_tensor_info()
+        
+        # Fast path: if shapes match, just copy input data
+        if self._shapes_match(input_data):
+            for name, data in input_data.items():
+                np.copyto(self.buffer[name][0], data)
+            return
+        
+        # Slow path: need to reallocate buffers (only on shape change)
+        # Free old buffers only if shapes changed
         for name, value in self.buffer.items():
             _, device_buffer, _ = value
             if (
@@ -122,25 +174,22 @@ class TRTWrapper:
                 checkCudaErrors(cudart.cudaFree(device_buffer))
                 self.buffer[name][1] = None
                 self.buffer[name][2] = 0
-        self.tensor_name_list = [
-            self.engine.get_tensor_name(i) for i in range(self.engine.num_io_tensors)
-        ]
-        self.n_input = sum(
-            [
-                self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT
-                for name in self.tensor_name_list
-            ]
-        )
-        self.n_output = self.engine.num_io_tensors - self.n_input
+
+        # For backwards compatibility
+        self.tensor_name_list = self._tensor_name_list
+        self.n_input = self._n_input
+        self.n_output = self._n_output
 
         for name, data in input_data.items():
             if self.engine.get_tensor_location(name) == trt.TensorLocation.DEVICE:
                 self.context.set_input_shape(name, data.shape)
             else:
                 self.context.set_tensor_address(name, data.ctypes.data)
+            # Cache the shape
+            self._cached_input_shapes[name] = data.shape
 
         # Prepare work before inference
-        for name in self.tensor_name_list:
+        for name in self._tensor_name_list:
             data_type = self.engine.get_tensor_dtype(name)
             runtime_shape = self.context.get_tensor_shape(name)
             if name not in self.output_allocator_map:
@@ -166,34 +215,42 @@ class TRTWrapper:
                 pass
 
         for name, data in input_data.items():
-            self.buffer[name][0] = np.ascontiguousarray(data)
+            np.copyto(self.buffer[name][0], np.ascontiguousarray(data))
 
-        for name in self.tensor_name_list:
+        for name in self._tensor_name_list:
             if self.engine.get_tensor_location(name) == trt.TensorLocation.DEVICE:
                 if self.buffer[name][1] is not None:
                     self.context.set_tensor_address(name, self.buffer[name][1])
             elif self.engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT:
                 self.context.set_tensor_address(name, self.buffer[name][0].ctypes.data)
 
+        self._buffers_initialized = True
         return
 
-    def infer(self, stream=0) -> None:
+    def infer(self, stream=None) -> None:
+        # Use dedicated stream if not specified
+        if stream is None:
+            stream = self._cuda_stream
+        
         # with profile_block(f"{self.model}::infer"):
-        # Do inference and print output
-        for name in self.tensor_name_list:
+        # Copy inputs to device (async)
+        for name in self._tensor_name_list:
             if (
                 self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT
                 and self.engine.get_tensor_location(name) == trt.TensorLocation.DEVICE
             ):
-                cudart.cudaMemcpy(
+                cudart.cudaMemcpyAsync(
                     self.buffer[name][1],
                     self.buffer[name][0].ctypes.data,
                     self.buffer[name][2],
                     cudart.cudaMemcpyKind.cudaMemcpyHostToDevice,
+                    stream,
                 )
 
+        # Execute inference on stream
         self.context.execute_async_v3(stream)
 
+        # Handle dynamic output shapes
         for name in self.output_allocator_map:
             myOutputAllocator = self.context.get_output_allocator(name)
             runtime_shape = myOutputAllocator.shape
@@ -203,23 +260,28 @@ class TRTWrapper:
             n_bytes = trt.volume(runtime_shape) * data_type.itemsize
             self.buffer[name] = [host_buffer, device_buffer, n_bytes]
 
-        for name in self.tensor_name_list:
+        # Copy outputs back to host (async)
+        for name in self._tensor_name_list:
             if (
                 self.engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT
                 and self.engine.get_tensor_location(name) == trt.TensorLocation.DEVICE
             ):
-                cudart.cudaMemcpy(
+                cudart.cudaMemcpyAsync(
                     self.buffer[name][0].ctypes.data,
                     self.buffer[name][1],
                     self.buffer[name][2],
                     cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                    stream,
                 )
+
+        # Synchronize to ensure completion before returning
+        cudart.cudaStreamSynchronize(stream)
 
         return
 
     def infer_async(self, stream=0) -> None:
         # Do inference and print output
-        for name in self.tensor_name_list:
+        for name in self._tensor_name_list:
             if (
                 self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT
                 and self.engine.get_tensor_location(name) == trt.TensorLocation.DEVICE
@@ -243,7 +305,7 @@ class TRTWrapper:
             n_bytes = trt.volume(runtime_shape) * data_type.itemsize
             self.buffer[name] = [host_buffer, device_buffer, n_bytes]
 
-        for name in self.tensor_name_list:
+        for name in self._tensor_name_list:
             if (
                 self.engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT
                 and self.engine.get_tensor_location(name) == trt.TensorLocation.DEVICE
@@ -259,6 +321,14 @@ class TRTWrapper:
         return
 
     def __del__(self):
+        # Clean up CUDA stream
+        if hasattr(self, "_cuda_stream") and self._cuda_stream is not None and cudart is not None:
+            try:
+                cudart.cudaStreamDestroy(self._cuda_stream)
+            except (TypeError, Exception):
+                pass
+        
+        # Clean up device buffers
         if hasattr(self, "buffer") and self.buffer is not None:
             for _, device_buffer, _ in self.buffer.values():
                 if (

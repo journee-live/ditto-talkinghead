@@ -19,7 +19,8 @@ def load_model(model_path: str, device: str = "cuda", **kwargs):
         # tensorRT
         from .tensorrt_utils import TRTWrapper
 
-        model = TRTWrapper(model_path)
+        high_priority = kwargs.get("high_priority", False)
+        model = TRTWrapper(model_path, high_priority=high_priority)
         return model, "tensorrt"
 
     elif model_path.endswith(".pt") or model_path.endswith(".pth"):
