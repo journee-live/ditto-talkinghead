@@ -546,7 +546,7 @@ class StreamSDK:
         while not self.stop_event.is_set():
             if self.reset_audio2motion_needed.is_set():
                 continue
-            if self.warp_f3d_queue.qsize() > 20 or self.decode_f3d_queue.qsize() > 20:
+            if self.warp_f3d_queue.qsize() > 10 or self.decode_f3d_queue.qsize() > 10:
                 time.sleep(0.05)
                 continue
 
