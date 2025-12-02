@@ -274,10 +274,39 @@ class TRTWrapper:
                     stream,
                 )
 
-        # Synchronize to ensure completion before returning
-        cudart.cudaStreamSynchronize(stream)
+        # Synchronize with timeout to prevent infinite blocking
+        self._sync_stream_with_timeout(stream, timeout_ms=5000)
 
         return
+    
+    def _sync_stream_with_timeout(self, stream, timeout_ms: int = 5000):
+        """
+        Synchronize stream with timeout to prevent infinite blocking.
+        Uses cudaStreamQuery polling with sleep to avoid CPU spinning.
+        """
+        import time
+        start_time = time.monotonic()
+        timeout_sec = timeout_ms / 1000.0
+        
+        while True:
+            result = cudart.cudaStreamQuery(stream)
+            # cudaSuccess (0) means stream is complete
+            if result[0] == cudart.cudaError_t.cudaSuccess:
+                return
+            # cudaErrorNotReady means still processing - this is expected
+            elif result[0] == cudart.cudaError_t.cudaErrorNotReady:
+                elapsed = time.monotonic() - start_time
+                if elapsed > timeout_sec:
+                    # Timeout - force sync and log warning
+                    logger.warning(f"Timeout waiting for stream {stream} to complete")
+                    cudart.cudaStreamSynchronize(stream)
+                    return
+                # Sleep briefly to avoid CPU spinning (1ms)
+                time.sleep(0.001)
+            else:
+                # Other error - force sync
+                cudart.cudaStreamSynchronize(stream)
+                return
 
     def infer_async(self, stream=0) -> None:
         # Do inference and print output
