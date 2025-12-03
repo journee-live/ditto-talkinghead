@@ -7,6 +7,7 @@ class Decoder:
     def __init__(self, model_path, device="cuda"):
         kwargs = {
             "module_name": "SPADEDecoder",
+            "high_priority": True,  # Decoder gets high-priority CUDA stream
         }
         self.model, self.model_type = load_model(model_path, device=device, **kwargs)
         self.device = device

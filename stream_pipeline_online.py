@@ -88,7 +88,9 @@ class StreamSDK:
         self.audio2motion = Audio2Motion(lmdm_cfg)
         self.motion_stitch = MotionStitch(stitch_network_cfg)
         self.warp_f3d = WarpF3D(warp_network_cfg)
+        
         self.decode_f3d = DecodeF3D(decoder_cfg)
+        
         self.putback = PutBack()
         self.chunk_size = chunk_size
         self.overlap_size = self.chunk_size[0] * self.BYTES_PER_FRAME
@@ -501,8 +503,9 @@ class StreamSDK:
 
     async def _motion_stitch_worker(self):
         num_frames_stitched = 0
+        last_finished_task_ts = 0
         while not self.stop_event.is_set():
-            try:
+            try:                  
                 item = self.motion_stitch_queue.get(timeout=0.05)
                 # Clear the flag when we have work to do
             except queue.Empty:
@@ -512,6 +515,10 @@ class StreamSDK:
                 self.motion_stitch_queue.task_done()
                 continue
 
+            if self.motion_stitch_queue.qsize() > 50:
+                logger.warning(f"Motion stitch took too long to process queue_size: {self.motion_stitch_queue.qsize()} items, last_started_delta: {time.perf_counter() - last_started_task_ts}, last_finished_delta: {time.perf_counter() - last_finished_task_ts}")
+
+            last_started_task_ts = time.perf_counter()
             frame_idx, x_d_info, ctrl_kwargs, gen_frame_idx = item
             x_s_info = await self.source_info_generator.get_value_for_index("x_s_info_lst", frame_idx)
             if (
@@ -525,6 +532,7 @@ class StreamSDK:
                 self.motion_stitch_out_queue.put([x_d_info, frame_idx, gen_frame_idx])
             self.warp_f3d_queue.put([frame_idx, x_s, x_d, gen_frame_idx])
             self.motion_stitch_queue.task_done()
+            last_finished_task_ts = time.perf_counter()
 
     def hubert_worker(self):
         try:
@@ -540,7 +548,7 @@ class StreamSDK:
         while not self.stop_event.is_set():
             if self.reset_audio2motion_needed.is_set():
                 continue
-            if self.warp_f3d_queue.qsize() > 30:
+            if self.warp_f3d_queue.qsize() > 10 or self.decode_f3d_queue.qsize() > 10:
                 time.sleep(0.05)
                 continue
 
@@ -565,6 +573,8 @@ class StreamSDK:
             # Put the processed features in the queue
             self.audio2motion_queue.put((item, chunk_idx))
             self.hubert_features_queue.task_done()
+            if self.audio2motion_queue.qsize() > 5:
+                time.sleep(0.05)
             chunk_idx += 1
 
     def audio2motion_worker(self):
